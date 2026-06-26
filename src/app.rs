@@ -191,14 +191,10 @@ impl eframe::App for App {
                 Focus::B => &mut self.deck_b,
             };
             ui.label("Speed — beats per cycle");
-            egui::Grid::new("bpc").spacing([4.0, 4.0]).show(ui, |ui| {
-                for n in 1..=16u32 {
-                    let label = format!("{n}/1");
-                    if ui.selectable_label(deck.beats_per_cycle == n, label).clicked() {
+            ui.horizontal(|ui| {
+                for n in [1u32, 2, 4, 8, 16] {
+                    if ui.selectable_label(deck.beats_per_cycle == n, format!("{n}/1")).clicked() {
                         deck.beats_per_cycle = n;
-                    }
-                    if n % 4 == 0 {
-                        ui.end_row();
                     }
                 }
             });
