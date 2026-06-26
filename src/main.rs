@@ -5,6 +5,8 @@
 mod app;
 mod canvas;
 mod clock;
+mod crossfader;
+mod deck;
 mod effect;
 mod layer;
 mod output;

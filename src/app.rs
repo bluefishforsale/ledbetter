@@ -1,21 +1,35 @@
-//! egui preview: composite the layer stack into the Canvas each frame, show it
-//! as a texture, and keep sending Art-Net. ponytail: rendering runs in the egui
-//! update loop for now; the dedicated render thread + lock-free publish (ADR-0002)
-//! arrives at M3 when two decks and multiple outputs make it pay.
+//! egui preview: render both decks, crossfade to the output canvas, show it, and
+//! feed Art-Net. ponytail: still single-threaded in the egui update loop; the
+//! dedicated render thread + lock-free publish (ADR-0002) lands when multiple
+//! outputs make it pay.
 
 use eframe::egui;
 
 use crate::canvas::Canvas;
 use crate::clock::BeatClock;
+use crate::crossfader::{self, FadeType};
+use crate::deck::Deck;
 use crate::effect::Effect;
-use crate::layer::{self, Layer, MixMode};
+use crate::layer::{Layer, MixMode};
 use crate::output::ArtNet;
 use crate::patch::{self, Pixel};
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Focus {
+    A,
+    B,
+}
+
 pub struct App {
-    canvas: Canvas,
     clock: BeatClock,
-    layers: Vec<Layer>,
+    deck_a: Deck,
+    deck_b: Deck,
+    canvas_a: Canvas,
+    canvas_b: Canvas,
+    out: Canvas,
+    xfade: f32,
+    fade: FadeType,
+    focus: Focus,
     patch: Vec<Pixel>,
     artnet: Option<ArtNet>,
     tex: Option<egui::TextureHandle>,
@@ -23,10 +37,17 @@ pub struct App {
 
 impl App {
     pub fn new(target: String) -> Self {
+        let (w, h) = (128, 128);
         App {
-            canvas: Canvas::new(128, 128),
             clock: BeatClock::new(120.0),
-            layers: vec![Layer::new(Effect::Plasma)],
+            deck_a: Deck::new(vec![Layer::new(Effect::Plasma)]),
+            deck_b: Deck::new(vec![Layer::new(Effect::Gradient)]),
+            canvas_a: Canvas::new(w, h),
+            canvas_b: Canvas::new(w, h),
+            out: Canvas::new(w, h),
+            xfade: 0.0,
+            fade: FadeType::Cross,
+            focus: Focus::A,
             patch: patch::strip(50),
             artnet: ArtNet::new(target).ok(),
             tex: None,
@@ -34,25 +55,21 @@ impl App {
     }
 
     fn canvas_image(&self) -> egui::ColorImage {
-        let mut rgba = Vec::with_capacity(self.canvas.w * self.canvas.h * 4);
-        for [r, g, b] in &self.canvas.px {
+        let mut rgba = Vec::with_capacity(self.out.w * self.out.h * 4);
+        for [r, g, b] in &self.out.px {
             rgba.extend_from_slice(&[*r, *g, *b, 255]);
         }
-        egui::ColorImage::from_rgba_unmultiplied([self.canvas.w, self.canvas.h], &rgba)
+        egui::ColorImage::from_rgba_unmultiplied([self.out.w, self.out.h], &rgba)
     }
 
-    fn layer_panel(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Layers");
-        ui.label("(bottom = base, last = top)");
+    fn layer_panel(ui: &mut egui::Ui, layers: &mut Vec<Layer>) {
         if ui.button("+ Add layer").clicked() {
-            self.layers.push(Layer::new(Effect::Color));
+            layers.push(Layer::new(Effect::Color));
         }
         ui.separator();
-
         let mut remove = None;
-        // Show top layer first for an intuitive stack view.
-        for i in (0..self.layers.len()).rev() {
-            let l = &mut self.layers[i];
+        for i in (0..layers.len()).rev() {
+            let l = &mut layers[i];
             ui.push_id(i, |ui| {
                 ui.horizontal(|ui| {
                     ui.checkbox(&mut l.enabled, "");
@@ -90,7 +107,7 @@ impl App {
             });
         }
         if let Some(i) = remove {
-            self.layers.remove(i);
+            layers.remove(i);
         }
     }
 }
@@ -98,10 +115,12 @@ impl App {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let beat = self.clock.phase();
-        layer::render(&self.layers, &mut self.canvas, beat);
+        crate::layer::render(&self.deck_a.layers, &mut self.canvas_a, self.deck_a.beat(beat));
+        crate::layer::render(&self.deck_b.layers, &mut self.canvas_b, self.deck_b.beat(beat));
+        crossfader::blend(&self.canvas_a, &self.canvas_b, self.xfade, self.fade, &mut self.out);
 
         if let Some(artnet) = self.artnet.as_mut() {
-            let dmx = patch::render_frame(&self.canvas, &self.patch);
+            let dmx = patch::render_frame(&self.out, &self.patch);
             let _ = artnet.send(0, &dmx);
         }
 
@@ -124,8 +143,34 @@ impl eframe::App for App {
             });
         });
 
-        egui::SidePanel::right("layers").default_width(260.0).show(ctx, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| self.layer_panel(ui));
+        egui::TopBottomPanel::bottom("crossfader").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("A");
+                ui.add(egui::Slider::new(&mut self.xfade, 0.0..=1.0).show_value(false));
+                ui.label("B");
+                egui::ComboBox::from_id_salt("fade")
+                    .selected_text(self.fade.name())
+                    .show_ui(ui, |ui| {
+                        for f in FadeType::ALL {
+                            ui.selectable_value(&mut self.fade, f, f.name());
+                        }
+                    });
+            });
+        });
+
+        egui::SidePanel::right("decks").default_width(280.0).show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Edit:");
+                ui.selectable_value(&mut self.focus, Focus::A, "Deck A");
+                ui.selectable_value(&mut self.focus, Focus::B, "Deck B");
+            });
+            let deck = match self.focus {
+                Focus::A => &mut self.deck_a,
+                Focus::B => &mut self.deck_b,
+            };
+            ui.add(egui::Slider::new(&mut deck.pitch, 0.25..=4.0).text("pitch"));
+            ui.separator();
+            egui::ScrollArea::vertical().show(ui, |ui| Self::layer_panel(ui, &mut deck.layers));
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
