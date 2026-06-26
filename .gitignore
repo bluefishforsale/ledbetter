@@ -1,0 +1,10 @@
+.DS_Store
+target/
+dist/
+*.new.png
+*.diff.png
+*.old.png
+
+# secrets
+.envrc
+.env
