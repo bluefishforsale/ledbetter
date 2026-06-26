@@ -4,7 +4,7 @@
 //! mode is ignored — it lays down the base.
 
 use crate::canvas::Canvas;
-use crate::effect::Effect;
+use crate::effect::{Effect, Params};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum MixMode {
@@ -78,6 +78,7 @@ pub struct Layer {
     /// Beats per cycle: how many beats one loop of this layer's effect spans
     /// (1 = every beat, 16 = every 16 beats). Per-layer, not per-deck.
     pub beats_per_cycle: u32,
+    pub params: Params,
 }
 
 impl Layer {
@@ -89,6 +90,7 @@ impl Layer {
             opacity: 1.0,
             enabled: true,
             beats_per_cycle: 1,
+            params: Params::default(),
         }
     }
 
@@ -110,7 +112,7 @@ pub fn render(layers: &[Layer], canvas: &mut Canvas, beats: f32) {
             let mut first = true;
             for l in layers.iter().filter(|l| l.enabled) {
                 let (mx, my) = l.map.apply(nx, ny);
-                let top = to_f32(l.effect.pixel(mx, my, l.phase(beats)));
+                let top = to_f32(l.effect.pixel(mx, my, l.phase(beats), l.params));
                 if first {
                     acc = top; // bottom layer: mix ignored
                     first = false;

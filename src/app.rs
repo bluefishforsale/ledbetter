@@ -9,7 +9,7 @@ use crate::canvas::Canvas;
 use crate::clock::BeatClock;
 use crate::crossfader::{self, FadeType};
 use crate::deck::Deck;
-use crate::effect::Effect;
+use crate::effect::{DIR_ARROWS, Effect};
 use crate::layer::{Layer, MixMode};
 use crate::output::{ArtNet, Sacn, Transport};
 use crate::patch::{Controller, Output, PixelFormat, Rig, Wiring};
@@ -129,6 +129,19 @@ impl App {
                         }
                     }
                 });
+                if l.effect.directional() {
+                    ui.horizontal(|ui| {
+                        ui.label("dir");
+                        for d in 0..8u8 {
+                            if ui.selectable_label(l.params.dir == d, DIR_ARROWS[d as usize]).clicked()
+                            {
+                                l.params.dir = d;
+                            }
+                        }
+                    });
+                    ui.add(egui::Slider::new(&mut l.params.pitch, 0.5..=16.0).text("pitch"));
+                    ui.add(egui::Slider::new(&mut l.params.width, 0.05..=1.0).text("width"));
+                }
                 ui.collapsing("Map", |ui| {
                     ui.add(egui::Slider::new(&mut l.map.offset.0, -1.0..=1.0).text("offset x"));
                     ui.add(egui::Slider::new(&mut l.map.offset.1, -1.0..=1.0).text("offset y"));
