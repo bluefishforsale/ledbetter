@@ -121,6 +121,14 @@ impl App {
                     }
                 });
                 ui.add(egui::Slider::new(&mut l.opacity, 0.0..=1.0).text("opacity"));
+                ui.horizontal(|ui| {
+                    ui.label("speed");
+                    for n in [1u32, 2, 4, 8, 16] {
+                        if ui.selectable_label(l.beats_per_cycle == n, format!("{n}/1")).clicked() {
+                            l.beats_per_cycle = n;
+                        }
+                    }
+                });
                 ui.collapsing("Map", |ui| {
                     ui.add(egui::Slider::new(&mut l.map.offset.0, -1.0..=1.0).text("offset x"));
                     ui.add(egui::Slider::new(&mut l.map.offset.1, -1.0..=1.0).text("offset y"));
@@ -140,8 +148,8 @@ impl App {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let beats = self.clock.beats();
-        crate::layer::render(&self.deck_a.layers, &mut self.canvas_a, self.deck_a.phase(beats));
-        crate::layer::render(&self.deck_b.layers, &mut self.canvas_b, self.deck_b.phase(beats));
+        crate::layer::render(&self.deck_a.layers, &mut self.canvas_a, beats);
+        crate::layer::render(&self.deck_b.layers, &mut self.canvas_b, beats);
         crossfader::blend(&self.canvas_a, &self.canvas_b, self.xfade, self.fade, &mut self.out);
 
         self.rig.send(&self.out);
@@ -190,14 +198,6 @@ impl eframe::App for App {
                 Focus::A => &mut self.deck_a,
                 Focus::B => &mut self.deck_b,
             };
-            ui.label("Speed — beats per cycle");
-            ui.horizontal(|ui| {
-                for n in [1u32, 2, 4, 8, 16] {
-                    if ui.selectable_label(deck.beats_per_cycle == n, format!("{n}/1")).clicked() {
-                        deck.beats_per_cycle = n;
-                    }
-                }
-            });
             ui.separator();
             egui::ScrollArea::vertical().show(ui, |ui| Self::layer_panel(ui, &mut deck.layers));
         });
