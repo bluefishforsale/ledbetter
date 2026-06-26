@@ -1,4 +1,4 @@
-//! egui preview: render the selected effect into the Canvas each frame, show it
+//! egui preview: composite the layer stack into the Canvas each frame, show it
 //! as a texture, and keep sending Art-Net. ponytail: rendering runs in the egui
 //! update loop for now; the dedicated render thread + lock-free publish (ADR-0002)
 //! arrives at M3 when two decks and multiple outputs make it pay.
@@ -8,13 +8,14 @@ use eframe::egui;
 use crate::canvas::Canvas;
 use crate::clock::BeatClock;
 use crate::effect::Effect;
+use crate::layer::{self, Layer, MixMode};
 use crate::output::ArtNet;
 use crate::patch::{self, Pixel};
 
 pub struct App {
     canvas: Canvas,
     clock: BeatClock,
-    effect: Effect,
+    layers: Vec<Layer>,
     patch: Vec<Pixel>,
     artnet: Option<ArtNet>,
     tex: Option<egui::TextureHandle>,
@@ -25,7 +26,7 @@ impl App {
         App {
             canvas: Canvas::new(128, 128),
             clock: BeatClock::new(120.0),
-            effect: Effect::Plasma,
+            layers: vec![Layer::new(Effect::Plasma)],
             patch: patch::strip(50),
             artnet: ArtNet::new(target).ok(),
             tex: None,
@@ -39,12 +40,65 @@ impl App {
         }
         egui::ColorImage::from_rgba_unmultiplied([self.canvas.w, self.canvas.h], &rgba)
     }
+
+    fn layer_panel(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Layers");
+        ui.label("(bottom = base, last = top)");
+        if ui.button("+ Add layer").clicked() {
+            self.layers.push(Layer::new(Effect::Color));
+        }
+        ui.separator();
+
+        let mut remove = None;
+        // Show top layer first for an intuitive stack view.
+        for i in (0..self.layers.len()).rev() {
+            let l = &mut self.layers[i];
+            ui.push_id(i, |ui| {
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut l.enabled, "");
+                    egui::ComboBox::from_id_salt("fx")
+                        .selected_text(l.effect.name())
+                        .show_ui(ui, |ui| {
+                            for e in Effect::ALL {
+                                ui.selectable_value(&mut l.effect, e, e.name());
+                            }
+                        });
+                    if i > 0 {
+                        egui::ComboBox::from_id_salt("mix")
+                            .selected_text(l.mix.name())
+                            .show_ui(ui, |ui| {
+                                for m in MixMode::ALL {
+                                    ui.selectable_value(&mut l.mix, m, m.name());
+                                }
+                            });
+                    } else {
+                        ui.label("base");
+                    }
+                    if ui.button("🗑").clicked() {
+                        remove = Some(i);
+                    }
+                });
+                ui.add(egui::Slider::new(&mut l.opacity, 0.0..=1.0).text("opacity"));
+                ui.collapsing("Map", |ui| {
+                    ui.add(egui::Slider::new(&mut l.map.offset.0, -1.0..=1.0).text("offset x"));
+                    ui.add(egui::Slider::new(&mut l.map.offset.1, -1.0..=1.0).text("offset y"));
+                    ui.add(egui::Slider::new(&mut l.map.scale.0, 0.1..=4.0).text("scale x"));
+                    ui.add(egui::Slider::new(&mut l.map.scale.1, 0.1..=4.0).text("scale y"));
+                    ui.checkbox(&mut l.map.tile, "tile");
+                });
+                ui.separator();
+            });
+        }
+        if let Some(i) = remove {
+            self.layers.remove(i);
+        }
+    }
 }
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let beat = self.clock.phase();
-        self.effect.render(&mut self.canvas, beat);
+        layer::render(&self.layers, &mut self.canvas, beat);
 
         if let Some(artnet) = self.artnet.as_mut() {
             let dmx = patch::render_frame(&self.canvas, &self.patch);
@@ -57,15 +111,8 @@ impl eframe::App for App {
             None => self.tex = Some(ctx.load_texture("canvas", img, Default::default())),
         }
 
-        egui::TopBottomPanel::top("controls").show(ctx, |ui| {
+        egui::TopBottomPanel::top("transport").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                egui::ComboBox::from_label("Effect")
-                    .selected_text(self.effect.name())
-                    .show_ui(ui, |ui| {
-                        for e in Effect::ALL {
-                            ui.selectable_value(&mut self.effect, e, e.name());
-                        }
-                    });
                 let mut bpm = self.clock.bpm();
                 if ui.add(egui::Slider::new(&mut bpm, 20.0..=300.0).text("BPM")).changed() {
                     self.clock.set_bpm(bpm);
@@ -75,6 +122,10 @@ impl eframe::App for App {
                 }
                 ui.label(format!("beat {beat:.2}"));
             });
+        });
+
+        egui::SidePanel::right("layers").default_width(260.0).show(ctx, |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| self.layer_panel(ui));
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {

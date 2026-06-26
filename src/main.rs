@@ -6,6 +6,7 @@ mod app;
 mod canvas;
 mod clock;
 mod effect;
+mod layer;
 mod output;
 mod patch;
 

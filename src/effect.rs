@@ -3,7 +3,7 @@
 //! ponytail: an enum of 4 known effects, not a trait+registry. The linkme
 //! registry earns its place when effects become user-extensible.
 
-use crate::canvas::{Canvas, hsv};
+use crate::canvas::hsv;
 use std::f32::consts::TAU;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -23,18 +23,6 @@ impl Effect {
             Effect::Gradient => "Gradient",
             Effect::Wave => "Wave",
             Effect::Plasma => "Plasma",
-        }
-    }
-
-    /// Fill the whole canvas for this beat phase.
-    pub fn render(self, c: &mut Canvas, beat: f32) {
-        let (w, h) = (c.w, c.h);
-        for y in 0..h {
-            let ny = y as f32 / (h - 1).max(1) as f32;
-            for x in 0..w {
-                let nx = x as f32 / (w - 1).max(1) as f32;
-                c.set(x, y, self.pixel(nx, ny, beat));
-            }
         }
     }
 
