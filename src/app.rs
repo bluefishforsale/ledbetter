@@ -11,8 +11,8 @@ use crate::crossfader::{self, FadeType};
 use crate::deck::Deck;
 use crate::effect::Effect;
 use crate::layer::{Layer, MixMode};
-use crate::output::ArtNet;
-use crate::patch::{self, Pixel};
+use crate::output::{ArtNet, Sacn, Transport};
+use crate::patch::{Controller, Output, PixelFormat, Rig, Wiring};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Focus {
@@ -30,14 +30,40 @@ pub struct App {
     xfade: f32,
     fade: FadeType,
     focus: Focus,
-    patch: Vec<Pixel>,
-    artnet: Option<ArtNet>,
+    rig: Rig,
     tex: Option<egui::TextureHandle>,
 }
 
 impl App {
     pub fn new(target: String) -> Self {
         let (w, h) = (128, 128);
+        // Demo rig: shows M4's claim — one canvas driving a mix of transports
+        // and pixel formats at once. Replaced by a loaded Patch file at M5.
+        // The middle RGB strip on Art-Net is the one you can sniff/see; the
+        // others (GRB on sACN, an RGBW+dimmer USB-DMX node, a serpentine WLED
+        // matrix) exercise every format and transport. USB-DMX/WLED are no-op
+        // stubs until tested on hardware.
+        let line = |fmt| Output::line(fmt, 50, (0.0, 0.5), (1.0, 0.5));
+        let mut controllers = Vec::new();
+        if let Ok(a) = ArtNet::new(target) {
+            controllers.push(Controller::new(Transport::ArtNet(a), 0, vec![line(PixelFormat::Rgb)]));
+        }
+        if let Ok(s) = Sacn::new(*b"ledbetter-cid-01") {
+            controllers.push(Controller::new(Transport::Sacn(s), 1, vec![line(PixelFormat::Grb)]));
+        }
+        controllers.push(Controller::new(
+            Transport::UsbDmx,
+            2,
+            vec![
+                Output::matrix(PixelFormat::Rgbw, 8, 8, Wiring::Contiguous),
+                Output::line(PixelFormat::Mono, 1, (0.5, 0.5), (0.5, 0.5)),
+            ],
+        ));
+        controllers.push(Controller::new(
+            Transport::Wled,
+            3,
+            vec![Output::matrix(PixelFormat::Rgb, 8, 8, Wiring::Serpentine)],
+        ));
         App {
             clock: BeatClock::new(120.0),
             deck_a: Deck::new(vec![Layer::new(Effect::Plasma)]),
@@ -48,8 +74,7 @@ impl App {
             xfade: 0.0,
             fade: FadeType::Cross,
             focus: Focus::A,
-            patch: patch::strip(50),
-            artnet: ArtNet::new(target).ok(),
+            rig: Rig { controllers },
             tex: None,
         }
     }
@@ -119,10 +144,7 @@ impl eframe::App for App {
         crate::layer::render(&self.deck_b.layers, &mut self.canvas_b, self.deck_b.beat(beat));
         crossfader::blend(&self.canvas_a, &self.canvas_b, self.xfade, self.fade, &mut self.out);
 
-        if let Some(artnet) = self.artnet.as_mut() {
-            let dmx = patch::render_frame(&self.out, &self.patch);
-            let _ = artnet.send(0, &dmx);
-        }
+        self.rig.send(&self.out);
 
         let img = self.canvas_image();
         match &mut self.tex {
