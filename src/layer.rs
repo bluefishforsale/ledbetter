@@ -39,33 +39,28 @@ impl MixMode {
 }
 
 /// Canvas-space transform of where a layer's effect is sampled (CONTEXT.md).
-/// ponytail: offset + scale + tile only. Rotation lands when a look needs it.
+/// Scale zooms about center; effects are periodic/continuous so the raw
+/// (unbounded) coord is passed through — seamless, never clamped or tiled.
+/// ponytail: offset + scale only. Rotation lands when a look needs it.
 #[derive(Clone, Copy)]
 pub struct Map {
     pub offset: (f32, f32),
     pub scale: (f32, f32),
-    pub tile: bool,
 }
 
 impl Default for Map {
     fn default() -> Self {
-        Map { offset: (0.0, 0.0), scale: (1.0, 1.0), tile: false }
+        Map { offset: (0.0, 0.0), scale: (1.0, 1.0) }
     }
 }
 
 impl Map {
-    /// Map an output coord (nx,ny) to the effect's sample coord.
+    /// Map an output coord (nx,ny) to the effect's sample coord (unbounded).
     fn apply(&self, nx: f32, ny: f32) -> (f32, f32) {
-        let mut mx = (nx - 0.5) / self.scale.0 + 0.5 - self.offset.0;
-        let mut my = (ny - 0.5) / self.scale.1 + 0.5 - self.offset.1;
-        if self.tile {
-            mx = mx.rem_euclid(1.0);
-            my = my.rem_euclid(1.0);
-        } else {
-            mx = mx.clamp(0.0, 1.0);
-            my = my.clamp(0.0, 1.0);
-        }
-        (mx, my)
+        (
+            (nx - 0.5) / self.scale.0 + 0.5 - self.offset.0,
+            (ny - 0.5) / self.scale.1 + 0.5 - self.offset.1,
+        )
     }
 }
 
@@ -212,9 +207,10 @@ mod tests {
     }
 
     #[test]
-    fn map_tile_wraps_out_of_range() {
-        let m = Map { offset: (0.0, 0.0), scale: (1.0, 1.0), tile: true };
-        let (mx, _) = m.apply(1.0, 0.5); // (1.0-0.5)/1 + 0.5 = 1.0 -> wraps to 0.0
-        assert!((mx - 0.0).abs() < 1e-6);
+    fn map_scale_zooms_about_center() {
+        // scale 2x: a point at the edge maps closer to centre (zoomed in).
+        let m = Map { offset: (0.0, 0.0), scale: (2.0, 2.0) };
+        let (mx, _) = m.apply(1.0, 0.5); // (1.0-0.5)/2 + 0.5 = 0.75
+        assert!((mx - 0.75).abs() < 1e-6);
     }
 }

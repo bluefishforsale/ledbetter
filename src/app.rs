@@ -140,14 +140,29 @@ impl App {
                         }
                     });
                     ui.add(egui::Slider::new(&mut l.params.pitch, 0.5..=16.0).text("pitch"));
-                    ui.add(egui::Slider::new(&mut l.params.width, 0.05..=1.0).text("width"));
+                }
+                match l.effect {
+                    Effect::Wave => {
+                        ui.add(egui::Slider::new(&mut l.params.width, 0.05..=1.0).text("width"));
+                    }
+                    Effect::Gradient => {
+                        ui.add(egui::Slider::new(&mut l.params.n_colors, 2..=8).text("colors"));
+                        ui.horizontal(|ui| {
+                            for k in 0..l.params.n_colors.clamp(2, 8) as usize {
+                                ui.color_edit_button_srgb(&mut l.params.colors[k]);
+                            }
+                        });
+                    }
+                    Effect::Plasma => {
+                        ui.add(egui::Slider::new(&mut l.params.pitch, 0.1..=8.0).text("zoom"));
+                    }
+                    Effect::Color => {}
                 }
                 ui.collapsing("Map", |ui| {
                     ui.add(egui::Slider::new(&mut l.map.offset.0, -1.0..=1.0).text("offset x"));
                     ui.add(egui::Slider::new(&mut l.map.offset.1, -1.0..=1.0).text("offset y"));
                     ui.add(egui::Slider::new(&mut l.map.scale.0, 0.1..=4.0).text("scale x"));
                     ui.add(egui::Slider::new(&mut l.map.scale.1, 0.1..=4.0).text("scale y"));
-                    ui.checkbox(&mut l.map.tile, "tile");
                 });
                 ui.separator();
             });

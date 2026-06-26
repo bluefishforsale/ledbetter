@@ -6,20 +6,45 @@
 use crate::canvas::hsv;
 use std::f32::consts::{FRAC_PI_4, PI, TAU};
 
-/// Per-layer effect parameters. Gradient and Wave use all three; Color and
-/// Plasma ignore them. Kept off the Effect enum so the picker stays a simple
-/// Copy value and params survive switching effects.
+/// Per-layer effect parameters. Different effects use different fields (see
+/// each match arm). Kept off the Effect enum so the picker stays a simple Copy
+/// value and params survive switching effects. Fixed-size palette keeps Copy.
 #[derive(Clone, Copy)]
 pub struct Params {
-    pub dir: u8,    // 0..8, direction in 45° steps
-    pub pitch: f32, // spatial repetitions across the canvas
-    pub width: f32, // feature/band size as a fraction of each period
+    pub dir: u8,                // 0..8, direction in 45° steps (Gradient/Wave)
+    pub pitch: f32,             // spatial repetitions (Gradient/Wave) / zoom (Plasma)
+    pub width: f32,             // band size as a fraction of each period (Wave)
+    pub n_colors: u8,           // Gradient palette size, 2..=8
+    pub colors: [[u8; 3]; 8],   // Gradient palette
 }
 
 impl Default for Params {
     fn default() -> Self {
-        Params { dir: 0, pitch: 1.0, width: 0.5 }
+        Params {
+            dir: 0,
+            pitch: 1.0,
+            width: 0.5,
+            n_colors: 3,
+            colors: [
+                [255, 0, 0],
+                [0, 255, 0],
+                [0, 0, 255],
+                [255, 255, 0],
+                [0, 255, 255],
+                [255, 0, 255],
+                [255, 255, 255],
+                [255, 128, 0],
+            ],
+        }
     }
+}
+
+fn lerp_rgb(a: [u8; 3], b: [u8; 3], t: f32) -> [u8; 3] {
+    let mut o = [0u8; 3];
+    for i in 0..3 {
+        o[i] = (a[i] as f32 + (b[i] as f32 - a[i] as f32) * t).round() as u8;
+    }
+    o
 }
 
 /// Arrow glyphs for the 8 directions (screen space, y down).
@@ -50,7 +75,7 @@ impl Effect {
         }
     }
 
-    /// Whether this effect uses the directional Params (direction/pitch/width).
+    /// Whether this effect exposes the direction + pitch + width controls.
     pub fn directional(self) -> bool {
         matches!(self, Effect::Gradient | Effect::Wave)
     }
@@ -60,27 +85,32 @@ impl Effect {
         match self {
             // Solid field, hue cycles once per loop.
             Effect::Color => hsv(phase, 1.0, 1.0),
-            // A rainbow band of width `p.width`, repeating `p.pitch` times along
-            // the chosen direction, scrolling with the phase.
+            // Seamless repeating ramp through the chosen palette — no gaps.
             Effect::Gradient => {
                 let f = band_coord(nx, ny, p, phase);
-                let w = p.width.max(0.001);
-                if f < w { hsv(f / w, 1.0, 1.0) } else { [0, 0, 0] }
+                let n = p.n_colors.clamp(2, 8) as usize;
+                let x = f * n as f32;
+                let i = (x.floor() as usize) % n;
+                let j = (i + 1) % n; // wrap last -> first for a seamless loop
+                lerp_rgb(p.colors[i], p.colors[j], x - x.floor())
             }
-            // A soft brightness band, same geometry as Gradient.
+            // A soft brightness band of size `p.width`, repeating along `dir`.
             Effect::Wave => {
                 let f = band_coord(nx, ny, p, phase);
                 let w = p.width.max(0.001);
                 let b = if f < w { (PI * f / w).sin() } else { 0.0 };
                 [(b * 255.0) as u8; 3]
             }
-            // Classic multi-sine plasma; hue from the summed field.
+            // Classic multi-sine plasma; `p.pitch` zooms about center (not tiled).
             Effect::Plasma => {
+                let z = p.pitch.max(0.05);
+                let x = (nx - 0.5) / z + 0.5;
+                let y = (ny - 0.5) / z + 0.5;
                 let t = phase * TAU;
-                let v = (nx * 8.0 + t).sin()
-                    + (ny * 8.0).sin()
-                    + ((nx + ny) * 8.0 + t).sin()
-                    + ((nx * nx + ny * ny).sqrt() * 8.0 - t).sin();
+                let v = (x * 8.0 + t).sin()
+                    + (y * 8.0).sin()
+                    + ((x + y) * 8.0 + t).sin()
+                    + ((x * x + y * y).sqrt() * 8.0 - t).sin();
                 hsv(v / 8.0 + 0.5, 1.0, 1.0)
             }
         }
@@ -112,20 +142,19 @@ mod tests {
     }
 
     #[test]
-    fn gradient_outside_band_is_black() {
-        // width 0.1 leaves most of the period black.
-        let p = Params { dir: 0, pitch: 1.0, width: 0.1 };
-        let lit = (0..100)
-            .filter(|i| Effect::Gradient.pixel(*i as f32 / 100.0, 0.5, 0.0, p) != [0, 0, 0])
-            .count();
-        assert!(lit > 0 && lit < 100, "lit pixels: {lit}");
+    fn gradient_has_no_black_gaps() {
+        // Default palette's first two colours are bright red/green.
+        let p = Params { n_colors: 2, ..Default::default() };
+        for i in 0..200 {
+            let c = Effect::Gradient.pixel(i as f32 / 200.0, 0.5, 0.0, p);
+            assert_ne!(c, [0, 0, 0], "black gap at {i}");
+        }
     }
 
     #[test]
     fn direction_rotates_the_pattern() {
-        // Horizontal vs vertical direction give different values off-center.
-        let h = Params { dir: 0, pitch: 2.0, width: 1.0 };
-        let v = Params { dir: 2, pitch: 2.0, width: 1.0 };
+        let h = Params { dir: 0, pitch: 2.0, ..Default::default() };
+        let v = Params { dir: 2, ..h };
         assert_ne!(
             Effect::Gradient.pixel(0.8, 0.2, 0.0, h),
             Effect::Gradient.pixel(0.8, 0.2, 0.0, v)
@@ -133,11 +162,12 @@ mod tests {
     }
 
     #[test]
-    fn plasma_is_deterministic() {
-        let p = Params::default();
-        assert_eq!(
-            Effect::Plasma.pixel(0.4, 0.6, 0.2, p),
-            Effect::Plasma.pixel(0.4, 0.6, 0.2, p)
+    fn plasma_zoom_changes_output() {
+        let a = Params { pitch: 1.0, ..Default::default() };
+        let b = Params { pitch: 4.0, ..a };
+        assert_ne!(
+            Effect::Plasma.pixel(0.9, 0.1, 0.0, a),
+            Effect::Plasma.pixel(0.9, 0.1, 0.0, b)
         );
     }
 }
