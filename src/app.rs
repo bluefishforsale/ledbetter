@@ -139,9 +139,9 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let beat = self.clock.phase();
-        crate::layer::render(&self.deck_a.layers, &mut self.canvas_a, self.deck_a.beat(beat));
-        crate::layer::render(&self.deck_b.layers, &mut self.canvas_b, self.deck_b.beat(beat));
+        let beats = self.clock.beats();
+        crate::layer::render(&self.deck_a.layers, &mut self.canvas_a, self.deck_a.phase(beats));
+        crate::layer::render(&self.deck_b.layers, &mut self.canvas_b, self.deck_b.phase(beats));
         crossfader::blend(&self.canvas_a, &self.canvas_b, self.xfade, self.fade, &mut self.out);
 
         self.rig.send(&self.out);
@@ -161,7 +161,7 @@ impl eframe::App for App {
                 if ui.button("Tap").clicked() {
                     self.clock.tap();
                 }
-                ui.label(format!("beat {beat:.2}"));
+                ui.label(format!("beat {:.2}", beats.rem_euclid(1.0)));
             });
         });
 
@@ -190,7 +190,18 @@ impl eframe::App for App {
                 Focus::A => &mut self.deck_a,
                 Focus::B => &mut self.deck_b,
             };
-            ui.add(egui::Slider::new(&mut deck.pitch, 0.25..=4.0).text("pitch"));
+            ui.label("Speed — beats per cycle");
+            egui::Grid::new("bpc").spacing([4.0, 4.0]).show(ui, |ui| {
+                for n in 1..=16u32 {
+                    let label = format!("{n}/1");
+                    if ui.selectable_label(deck.beats_per_cycle == n, label).clicked() {
+                        deck.beats_per_cycle = n;
+                    }
+                    if n % 4 == 0 {
+                        ui.end_row();
+                    }
+                }
+            });
             ui.separator();
             egui::ScrollArea::vertical().show(ui, |ui| Self::layer_panel(ui, &mut deck.layers));
         });

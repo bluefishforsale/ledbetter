@@ -22,10 +22,12 @@ impl BeatClock {
         self.bpm = bpm.clamp(20.0, 300.0);
     }
 
-    /// Beat phase in [0,1): 0 at each downbeat, wraps once per beat.
-    pub fn phase(&self) -> f32 {
-        let beats = self.start.elapsed().as_secs_f32() * self.bpm / 60.0;
-        beats.rem_euclid(1.0)
+    /// Total elapsed beats, monotonically increasing. Effects divide this by a
+    /// per-deck beats-per-cycle to run slower than one loop per beat.
+    /// ponytail: computed from start, so changing BPM rescales the timeline.
+    /// A per-frame phase accumulator is the upgrade if live re-tapping jumps.
+    pub fn beats(&self) -> f32 {
+        self.start.elapsed().as_secs_f32() * self.bpm / 60.0
     }
 
     /// Register a tap. Two or more taps within ~2s set the BPM from the mean
