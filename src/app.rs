@@ -13,7 +13,13 @@ use crate::effect::{DIR_ARROWS, Effect};
 use crate::layer::{Layer, MixMode};
 use crate::output::{ArtNet, Sacn, Transport};
 use crate::palette;
-use crate::patch::{Controller, Output, PixelFormat, Rig, Wiring};
+use crate::patch::{self, Controller, Output, PixelFormat, Rig, Wiring};
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum View {
+    Rig,
+    Canvas,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Focus {
@@ -32,38 +38,44 @@ pub struct App {
     fade: FadeType,
     focus: Focus,
     rig: Rig,
+    view: View,
     tex: Option<egui::TextureHandle>,
 }
 
 impl App {
     pub fn new(target: String) -> Self {
         let (w, h) = (128, 128);
-        // Demo rig: shows M4's claim — one canvas driving a mix of transports
-        // and pixel formats at once. Replaced by a loaded Patch file at M5.
-        // The middle RGB strip on Art-Net is the one you can sniff/see; the
-        // others (GRB on sACN, an RGBW+dimmer USB-DMX node, a serpentine WLED
-        // matrix) exercise every format and transport. USB-DMX/WLED are no-op
-        // stubs until tested on hardware.
-        let line = |fmt| Output::line(fmt, 50, (0.0, 0.5), (1.0, 0.5));
+        // Demo rig: a spikey-circle of 12 spokes on Art-Net is the hero — a
+        // Radial effect radiates out every spoke. The others (GRB line on sACN,
+        // a small RGBW+dimmer USB-DMX node, a serpentine WLED matrix tucked in a
+        // corner) exercise every format/transport. USB-DMX/WLED are no-op stubs
+        // until tested on hardware. Replaced by a loaded Patch file at M5.
         let mut controllers = Vec::new();
         if let Ok(a) = ArtNet::new(target) {
-            controllers.push(Controller::new(Transport::ArtNet(a), 0, vec![line(PixelFormat::Rgb)]));
+            controllers.push(Controller::new(
+                Transport::ArtNet(a),
+                0,
+                patch::spokes(12, 20, PixelFormat::Rgb),
+            ));
         }
         if let Ok(s) = Sacn::new(*b"ledbetter-cid-01") {
-            controllers.push(Controller::new(Transport::Sacn(s), 1, vec![line(PixelFormat::Grb)]));
+            let line = Output::line(PixelFormat::Grb, 40, (0.1, 0.95), (0.9, 0.95));
+            controllers.push(Controller::new(Transport::Sacn(s), 1, vec![line]));
         }
         controllers.push(Controller::new(
             Transport::UsbDmx,
             2,
             vec![
-                Output::matrix(PixelFormat::Rgbw, 8, 8, Wiring::Contiguous),
-                Output::line(PixelFormat::Mono, 1, (0.5, 0.5), (0.5, 0.5)),
+                Output::matrix(PixelFormat::Rgbw, 6, 6, Wiring::Contiguous)
+                    .placed((0.02, 0.02), (0.20, 0.20)),
+                Output::line(PixelFormat::Mono, 1, (0.95, 0.5), (0.95, 0.5)),
             ],
         ));
         controllers.push(Controller::new(
             Transport::Wled,
             3,
-            vec![Output::matrix(PixelFormat::Rgb, 8, 8, Wiring::Serpentine)],
+            vec![Output::matrix(PixelFormat::Rgb, 6, 6, Wiring::Serpentine)
+                .placed((0.80, 0.02), (0.98, 0.20))],
         ));
         App {
             clock: BeatClock::new(120.0),
@@ -76,6 +88,7 @@ impl App {
             fade: FadeType::Cross,
             focus: Focus::A,
             rig: Rig { controllers },
+            view: View::Rig,
             tex: None,
         }
     }
@@ -216,6 +229,9 @@ impl eframe::App for App {
                     self.clock.tap();
                 }
                 ui.label(format!("beat {:.2}", beats.rem_euclid(1.0)));
+                ui.separator();
+                ui.selectable_value(&mut self.view, View::Rig, "Rig");
+                ui.selectable_value(&mut self.view, View::Canvas, "Canvas");
             });
         });
 
@@ -248,10 +264,23 @@ impl eframe::App for App {
             egui::ScrollArea::vertical().show(ui, |ui| Self::layer_panel(ui, &mut deck.layers));
         });
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            if let Some(tex) = &self.tex {
-                let size = ui.available_size();
-                ui.add(egui::Image::new(tex).fit_to_exact_size(size));
+        egui::CentralPanel::default().show(ctx, |ui| match self.view {
+            View::Canvas => {
+                if let Some(tex) = &self.tex {
+                    let size = ui.available_size();
+                    ui.add(egui::Image::new(tex).fit_to_exact_size(size));
+                }
+            }
+            View::Rig => {
+                let (resp, painter) =
+                    ui.allocate_painter(ui.available_size(), egui::Sense::hover());
+                let rect = resp.rect;
+                let side = rect.width().min(rect.height());
+                painter.rect_filled(rect, 0.0, egui::Color32::from_gray(12));
+                for (u, v, c) in self.rig.preview(&self.out) {
+                    let pos = rect.min + egui::vec2(u * side, v * side);
+                    painter.circle_filled(pos, 3.0, egui::Color32::from_rgb(c[0], c[1], c[2]));
+                }
             }
         });
 

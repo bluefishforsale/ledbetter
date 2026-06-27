@@ -4,6 +4,7 @@
 //! Controller base. A Rig fans the canvas out to every Controller's transport.
 
 use std::collections::BTreeMap;
+use std::f32::consts::TAU;
 
 use crate::canvas::Canvas;
 use crate::output::Transport;
@@ -78,6 +79,15 @@ impl Output {
         Output { format, positions }
     }
 
+    /// Remap this output's positions into a sub-rect of the canvas.
+    pub fn placed(mut self, min: (f32, f32), max: (f32, f32)) -> Self {
+        for p in self.positions.iter_mut() {
+            p.0 = min.0 + p.0 * (max.0 - min.0);
+            p.1 = min.1 + p.1 * (max.1 - min.1);
+        }
+        self
+    }
+
     /// A `w`x`h` matrix filling the canvas; serpentine reverses odd rows.
     pub fn matrix(format: PixelFormat, w: usize, h: usize, wiring: Wiring) -> Self {
         let mut positions = Vec::with_capacity(w * h);
@@ -91,6 +101,17 @@ impl Output {
         }
         Output { format, positions }
     }
+}
+
+/// `n` strips radiating from the canvas center to the rim — a spikey-circle
+/// arrangement. A Radial effect then radiates out every spoke.
+pub fn spokes(n: usize, per: usize, format: PixelFormat) -> Vec<Output> {
+    (0..n)
+        .map(|i| {
+            let a = i as f32 / n.max(1) as f32 * TAU;
+            Output::line(format, per, (0.5, 0.5), (0.5 + 0.45 * a.cos(), 0.5 + 0.45 * a.sin()))
+        })
+        .collect()
 }
 
 pub struct Pixel {
@@ -140,6 +161,18 @@ pub struct Rig {
 }
 
 impl Rig {
+    /// Every output pixel's canvas position and its sampled color — for the
+    /// rig (dot) preview, which shows the real fixtures rather than the canvas.
+    pub fn preview(&self, canvas: &Canvas) -> Vec<(f32, f32, [u8; 3])> {
+        let mut out = Vec::new();
+        for c in &self.controllers {
+            for p in &c.pixels {
+                out.push((p.u, p.v, canvas.sample(p.u, p.v)));
+            }
+        }
+        out
+    }
+
     /// Sample the canvas per pixel, pack per-universe DMX frames, send each
     /// Controller's universes over its transport.
     pub fn send(&mut self, canvas: &Canvas) {
