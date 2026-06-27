@@ -23,6 +23,7 @@ const FRAG_HEADER: &str = r#"#version 330 core
 out vec4 fragColor;
 uniform vec2 u_resolution;
 uniform float u_time;
+uniform sampler2D u_feedback; // the previous frame, for MilkDrop-style feedback
 "#;
 
 /// A starter shader (original) so the runner shows something immediately.
@@ -37,11 +38,27 @@ pub const EXAMPLE: &str = r#"void main() {
 }
 "#;
 
+/// MilkDrop-style feedback (original): zoom+rotate the previous frame, decay it,
+/// and add a moving spark. Paste into a deck's shader to see the tunnel/flow.
+pub const FEEDBACK_EXAMPLE: &str = r#"void main() {
+    vec2 uv = gl_FragCoord.xy / u_resolution;
+    vec2 c = uv - 0.5;
+    float a = 0.02;                       // rotate
+    mat2 rot = mat2(cos(a), -sin(a), sin(a), cos(a));
+    vec2 prev = rot * c * 0.98 + 0.5;     // zoom in slightly
+    vec3 fb = texture(u_feedback, prev).rgb * 0.96;  // decay
+    float d = length(c - 0.3 * vec2(cos(u_time), sin(u_time * 1.3)));
+    vec3 spark = smoothstep(0.06, 0.0, d) * (0.5 + 0.5 * cos(u_time + vec3(0.0, 2.0, 4.0)));
+    fragColor = vec4(max(fb, spark), 1.0);
+}
+"#;
+
 pub struct GpuShader {
     gl: Arc<glow::Context>,
     program: glow::Program,
     fbo: glow::Framebuffer,
-    tex: glow::Texture,
+    tex: [glow::Texture; 2], // ping-pong: render into one while sampling the other
+    write: usize,
     vao: glow::VertexArray,
     w: i32,
     h: i32,
@@ -52,47 +69,78 @@ impl GpuShader {
     pub fn new(gl: Arc<glow::Context>, w: usize, h: usize, user_frag: &str) -> Result<Self, String> {
         unsafe {
             let program = link(&gl, VERT, &format!("{FRAG_HEADER}{user_frag}"))?;
-            let tex = gl.create_texture()?;
-            gl.bind_texture(glow::TEXTURE_2D, Some(tex));
-            gl.tex_image_2d(
-                glow::TEXTURE_2D,
-                0,
-                glow::RGBA8 as i32,
-                w as i32,
-                h as i32,
-                0,
-                glow::RGBA,
-                glow::UNSIGNED_BYTE,
-                glow::PixelUnpackData::Slice(None),
-            );
-            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::NEAREST as i32);
-            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::NEAREST as i32);
             let fbo = gl.create_framebuffer()?;
-            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
+            let tex = [gl.create_texture()?, gl.create_texture()?];
+            for t in tex {
+                gl.bind_texture(glow::TEXTURE_2D, Some(t));
+                gl.tex_image_2d(
+                    glow::TEXTURE_2D,
+                    0,
+                    glow::RGBA8 as i32,
+                    w as i32,
+                    h as i32,
+                    0,
+                    glow::RGBA,
+                    glow::UNSIGNED_BYTE,
+                    glow::PixelUnpackData::Slice(None),
+                );
+                // LINEAR + clamp so feedback warps sample smoothly.
+                gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
+                gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
+                gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE as i32);
+                gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
+                // clear to black so the first frame's feedback is empty
+                gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
+                gl.framebuffer_texture_2d(
+                    glow::FRAMEBUFFER,
+                    glow::COLOR_ATTACHMENT0,
+                    glow::TEXTURE_2D,
+                    Some(t),
+                    0,
+                );
+                gl.clear_color(0.0, 0.0, 0.0, 1.0);
+                gl.clear(glow::COLOR_BUFFER_BIT);
+            }
+            gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+            let vao = gl.create_vertex_array()?;
+            Ok(GpuShader {
+                gl,
+                program,
+                fbo,
+                tex,
+                write: 0,
+                vao,
+                w: w as i32,
+                h: h as i32,
+                buf: vec![0; w * h * 4],
+            })
+        }
+    }
+
+    /// Render the shader at time `t`, sampling the previous frame as u_feedback.
+    pub fn render(&mut self, t: f32) {
+        let gl = &self.gl;
+        let read = self.tex[1 - self.write];
+        let write = self.tex[self.write];
+        unsafe {
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.fbo));
             gl.framebuffer_texture_2d(
                 glow::FRAMEBUFFER,
                 glow::COLOR_ATTACHMENT0,
                 glow::TEXTURE_2D,
-                Some(tex),
+                Some(write),
                 0,
             );
-            gl.bind_framebuffer(glow::FRAMEBUFFER, None);
-            let vao = gl.create_vertex_array()?;
-            Ok(GpuShader { gl, program, fbo, tex, vao, w: w as i32, h: h as i32, buf: vec![0; w * h * 4] })
-        }
-    }
-
-    /// Render the shader at time `t` into the offscreen buffer.
-    pub fn render(&mut self, t: f32) {
-        let gl = &self.gl;
-        unsafe {
-            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.fbo));
             gl.viewport(0, 0, self.w, self.h);
             gl.use_program(Some(self.program));
             let res = gl.get_uniform_location(self.program, "u_resolution");
             gl.uniform_2_f32(res.as_ref(), self.w as f32, self.h as f32);
             let time = gl.get_uniform_location(self.program, "u_time");
             gl.uniform_1_f32(time.as_ref(), t);
+            gl.active_texture(glow::TEXTURE0);
+            gl.bind_texture(glow::TEXTURE_2D, Some(read));
+            let fb = gl.get_uniform_location(self.program, "u_feedback");
+            gl.uniform_1_i32(fb.as_ref(), 0);
             gl.bind_vertex_array(Some(self.vao));
             gl.draw_arrays(glow::TRIANGLES, 0, 3);
             gl.read_pixels(
@@ -106,6 +154,7 @@ impl GpuShader {
             );
             gl.bind_framebuffer(glow::FRAMEBUFFER, None);
         }
+        self.write = 1 - self.write;
     }
 
     /// Copy the last render into a Canvas, flipping GL's bottom-up rows.
@@ -127,7 +176,8 @@ impl Drop for GpuShader {
         unsafe {
             gl.delete_program(self.program);
             gl.delete_framebuffer(self.fbo);
-            gl.delete_texture(self.tex);
+            gl.delete_texture(self.tex[0]);
+            gl.delete_texture(self.tex[1]);
             gl.delete_vertex_array(self.vao);
         }
     }

@@ -164,7 +164,12 @@ impl App {
             rig: Rig { controllers },
             view: View::Rig,
             shader_a: DeckShader::new(false),
-            shader_b: DeckShader::new(true), // deck B shows the GLSL example by default
+            shader_b: {
+                // deck B showcases the GLSL runner with the feedback example
+                let mut s = DeckShader::new(true);
+                s.src = shader::FEEDBACK_EXAMPLE.to_string();
+                s
+            },
             tex: None,
         }
     }
@@ -342,6 +347,17 @@ impl eframe::App for App {
                         sh.dirty = true;
                     }
                     if sh.enabled {
+                        ui.horizontal(|ui| {
+                            ui.label("load:");
+                            if ui.button("basic").clicked() {
+                                sh.src = shader::EXAMPLE.to_string();
+                                sh.dirty = true;
+                            }
+                            if ui.button("feedback").clicked() {
+                                sh.src = shader::FEEDBACK_EXAMPLE.to_string();
+                                sh.dirty = true;
+                            }
+                        });
                         let r = ui.add(
                             egui::TextEdit::multiline(&mut sh.src)
                                 .code_editor()
