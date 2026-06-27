@@ -3,7 +3,7 @@
 //! ponytail: an enum of 4 known effects, not a trait+registry. The linkme
 //! registry earns its place when effects become user-extensible.
 
-use crate::canvas::hsv;
+use crate::canvas::{hsluv_lerp, hsv};
 use std::f32::consts::{FRAC_PI_4, PI, TAU};
 
 /// Per-layer effect parameters. Different effects use different fields (see
@@ -39,21 +39,14 @@ impl Default for Params {
     }
 }
 
-fn lerp_rgb(a: [u8; 3], b: [u8; 3], t: f32) -> [u8; 3] {
-    let mut o = [0u8; 3];
-    for i in 0..3 {
-        o[i] = (a[i] as f32 + (b[i] as f32 - a[i] as f32) * t).round() as u8;
-    }
-    o
-}
-
-/// Sample the palette as a seamless loop at position `t` (wraps last -> first).
+/// Sample the palette as a seamless loop at position `t` (wraps last -> first),
+/// interpolating in HSLuv so ramps stay perceptually even.
 fn palette_at(p: &Params, t: f32) -> [u8; 3] {
     let n = p.n_colors.clamp(2, 8) as usize;
     let x = t.rem_euclid(1.0) * n as f32;
     let i = (x.floor() as usize) % n;
     let j = (i + 1) % n;
-    lerp_rgb(p.colors[i], p.colors[j], x - x.floor())
+    hsluv_lerp(p.colors[i], p.colors[j], x - x.floor())
 }
 
 /// Deterministic hash of a coordinate to [0,1) — for Sparkle's per-pixel seed.

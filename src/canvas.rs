@@ -66,9 +66,35 @@ pub fn hsv(h: f32, s: f32, v: f32) -> Rgb {
     [(r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8]
 }
 
+/// Interpolate two colors in HSLuv (perceptually uniform) with shortest-path
+/// hue. Used for palette/gradient ramps so red->green doesn't pass through mud.
+/// ponytail: per-call conversion is fine here; if many palette layers cost too
+/// much, precompute a 256-entry LUT per palette.
+pub fn hsluv_lerp(a: Rgb, b: Rgb, t: f32) -> Rgb {
+    let to = |c: Rgb| {
+        hsluv::rgb_to_hsluv(c[0] as f64 / 255.0, c[1] as f64 / 255.0, c[2] as f64 / 255.0)
+    };
+    let (ah, asat, al) = to(a);
+    let (bh, bsat, bl) = to(b);
+    let t = t as f64;
+    let dh = (bh - ah + 540.0).rem_euclid(360.0) - 180.0; // shortest way round the hue circle
+    let (r, g, bb) = hsluv::hsluv_to_rgb(ah + dh * t, asat + (bsat - asat) * t, al + (bl - al) * t);
+    [
+        (r * 255.0).round().clamp(0.0, 255.0) as u8,
+        (g * 255.0).round().clamp(0.0, 255.0) as u8,
+        (bb * 255.0).round().clamp(0.0, 255.0) as u8,
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hsluv_lerp_hits_endpoints() {
+        assert_eq!(hsluv_lerp([255, 0, 0], [0, 255, 0], 0.0), [255, 0, 0]);
+        assert_eq!(hsluv_lerp([255, 0, 0], [0, 255, 0], 1.0), [0, 255, 0]);
+    }
 
     #[test]
     fn bilinear_interpolates_midpoint() {

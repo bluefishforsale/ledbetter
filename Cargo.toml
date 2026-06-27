@@ -7,3 +7,4 @@ edition = "2024"
 # COBRA's full dep set lives in git history (commit 56d7c8c) for reference.
 [dependencies]
 eframe = "0.33"
+hsluv = "0.3.1"
