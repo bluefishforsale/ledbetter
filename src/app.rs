@@ -88,6 +88,22 @@ impl App {
         egui::ColorImage::from_rgba_unmultiplied([self.out.w, self.out.h], &rgba)
     }
 
+    fn palette_ui(ui: &mut egui::Ui, params: &mut crate::effect::Params) {
+        egui::ComboBox::from_id_salt("palette").selected_text("palette…").show_ui(ui, |ui| {
+            for pal in palette::PALETTES {
+                if ui.selectable_label(false, pal.name).clicked() {
+                    palette::apply(params, pal);
+                }
+            }
+        });
+        ui.add(egui::Slider::new(&mut params.n_colors, 2..=8).text("colors"));
+        ui.horizontal(|ui| {
+            for k in 0..params.n_colors.clamp(2, 8) as usize {
+                ui.color_edit_button_srgb(&mut params.colors[k]);
+            }
+        });
+    }
+
     fn layer_panel(ui: &mut egui::Ui, layers: &mut Vec<Layer>) {
         if ui.button("+ Add layer").clicked() {
             layers.push(Layer::new(Effect::Color));
@@ -146,22 +162,14 @@ impl App {
                     Effect::Wave => {
                         ui.add(egui::Slider::new(&mut l.params.width, 0.05..=1.0).text("width"));
                     }
-                    Effect::Gradient => {
-                        egui::ComboBox::from_id_salt("palette")
-                            .selected_text("palette…")
-                            .show_ui(ui, |ui| {
-                                for pal in palette::PALETTES {
-                                    if ui.selectable_label(false, pal.name).clicked() {
-                                        palette::apply(&mut l.params, pal);
-                                    }
-                                }
-                            });
-                        ui.add(egui::Slider::new(&mut l.params.n_colors, 2..=8).text("colors"));
-                        ui.horizontal(|ui| {
-                            for k in 0..l.params.n_colors.clamp(2, 8) as usize {
-                                ui.color_edit_button_srgb(&mut l.params.colors[k]);
-                            }
-                        });
+                    Effect::Gradient => Self::palette_ui(ui, &mut l.params),
+                    Effect::Radial => {
+                        ui.add(egui::Slider::new(&mut l.params.pitch, 0.5..=16.0).text("rings"));
+                        Self::palette_ui(ui, &mut l.params);
+                    }
+                    Effect::Sparkle => {
+                        ui.add(egui::Slider::new(&mut l.params.width, 0.02..=0.6).text("density"));
+                        Self::palette_ui(ui, &mut l.params);
                     }
                     Effect::Plasma => {
                         ui.add(egui::Slider::new(&mut l.params.pitch, 0.1..=8.0).text("zoom"));

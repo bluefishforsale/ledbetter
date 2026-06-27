@@ -47,6 +47,21 @@ fn lerp_rgb(a: [u8; 3], b: [u8; 3], t: f32) -> [u8; 3] {
     o
 }
 
+/// Sample the palette as a seamless loop at position `t` (wraps last -> first).
+fn palette_at(p: &Params, t: f32) -> [u8; 3] {
+    let n = p.n_colors.clamp(2, 8) as usize;
+    let x = t.rem_euclid(1.0) * n as f32;
+    let i = (x.floor() as usize) % n;
+    let j = (i + 1) % n;
+    lerp_rgb(p.colors[i], p.colors[j], x - x.floor())
+}
+
+/// Deterministic hash of a coordinate to [0,1) — for Sparkle's per-pixel seed.
+fn hash2(x: f32, y: f32) -> f32 {
+    let v = (x * 127.1 + y * 311.7).sin() * 43758.547;
+    v.fract().abs()
+}
+
 /// Arrow glyphs for the 8 directions (screen space, y down).
 pub const DIR_ARROWS: [&str; 8] = ["→", "↘", "↓", "↙", "←", "↖", "↑", "↗"];
 
@@ -61,10 +76,19 @@ pub enum Effect {
     Gradient,
     Wave,
     Plasma,
+    Radial,
+    Sparkle,
 }
 
 impl Effect {
-    pub const ALL: [Effect; 4] = [Effect::Color, Effect::Gradient, Effect::Wave, Effect::Plasma];
+    pub const ALL: [Effect; 6] = [
+        Effect::Color,
+        Effect::Gradient,
+        Effect::Wave,
+        Effect::Plasma,
+        Effect::Radial,
+        Effect::Sparkle,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -72,6 +96,8 @@ impl Effect {
             Effect::Gradient => "Gradient",
             Effect::Wave => "Wave",
             Effect::Plasma => "Plasma",
+            Effect::Radial => "Radial",
+            Effect::Sparkle => "Sparkle",
         }
     }
 
@@ -86,14 +112,7 @@ impl Effect {
             // Solid field, hue cycles once per loop.
             Effect::Color => hsv(phase, 1.0, 1.0),
             // Seamless repeating ramp through the chosen palette — no gaps.
-            Effect::Gradient => {
-                let f = band_coord(nx, ny, p, phase);
-                let n = p.n_colors.clamp(2, 8) as usize;
-                let x = f * n as f32;
-                let i = (x.floor() as usize) % n;
-                let j = (i + 1) % n; // wrap last -> first for a seamless loop
-                lerp_rgb(p.colors[i], p.colors[j], x - x.floor())
-            }
+            Effect::Gradient => palette_at(&p, band_coord(nx, ny, p, phase)),
             // A soft brightness band of size `p.width`, repeating along `dir`.
             Effect::Wave => {
                 let f = band_coord(nx, ny, p, phase);
@@ -112,6 +131,30 @@ impl Effect {
                     + ((x + y) * 8.0 + t).sin()
                     + ((x * x + y * y).sqrt() * 8.0 - t).sin();
                 hsv(v / 8.0 + 0.5, 1.0, 1.0)
+            }
+            // Concentric palette rings expanding from the canvas center; on a
+            // spoke layout this radiates out every bar. pitch = ring count.
+            Effect::Radial => {
+                let r = ((nx - 0.5).powi(2) + (ny - 0.5).powi(2)).sqrt();
+                palette_at(&p, r * p.pitch - phase)
+            }
+            // Per-pixel random twinkle, palette-colored. width = spark
+            // density/duration; each pixel fires on its own offset.
+            Effect::Sparkle => {
+                let seed = hash2((nx * 997.0).floor(), (ny * 997.0).floor());
+                let local = (phase + seed).rem_euclid(1.0);
+                let w = p.width.max(0.01);
+                if local < w {
+                    let b = 1.0 - local / w;
+                    let c = palette_at(&p, seed);
+                    [
+                        (c[0] as f32 * b) as u8,
+                        (c[1] as f32 * b) as u8,
+                        (c[2] as f32 * b) as u8,
+                    ]
+                } else {
+                    [0, 0, 0]
+                }
             }
         }
     }
@@ -158,6 +201,23 @@ mod tests {
         assert_ne!(
             Effect::Gradient.pixel(0.8, 0.2, 0.0, h),
             Effect::Gradient.pixel(0.8, 0.2, 0.0, v)
+        );
+    }
+
+    #[test]
+    fn radial_changes_with_distance_from_center() {
+        let p = Params { pitch: 4.0, ..Default::default() };
+        let center = Effect::Radial.pixel(0.5, 0.5, 0.0, p);
+        let edge = Effect::Radial.pixel(0.0, 0.0, 0.0, p);
+        assert_ne!(center, edge);
+    }
+
+    #[test]
+    fn sparkle_is_deterministic() {
+        let p = Params::default();
+        assert_eq!(
+            Effect::Sparkle.pixel(0.4, 0.6, 0.2, p),
+            Effect::Sparkle.pixel(0.4, 0.6, 0.2, p)
         );
     }
 
