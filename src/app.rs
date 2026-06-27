@@ -41,6 +41,26 @@ impl DeckShader {
     }
 }
 
+/// A slider whose label is clickable — clicking the label resets to `default`.
+fn rslider<N: egui::emath::Numeric>(
+    ui: &mut egui::Ui,
+    value: &mut N,
+    range: std::ops::RangeInclusive<N>,
+    label: &str,
+    default: N,
+) {
+    ui.horizontal(|ui| {
+        ui.add(egui::Slider::new(value, range));
+        if ui
+            .add(egui::Label::new(label).sense(egui::Sense::click()))
+            .on_hover_text("click to reset")
+            .clicked()
+        {
+            *value = default;
+        }
+    });
+}
+
 /// Render a deck: GLSL shader if enabled and the GL context is available,
 /// otherwise the CPU layer stack (also the fallback on compile error).
 fn render_deck(
@@ -165,7 +185,7 @@ impl App {
                 }
             }
         });
-        ui.add(egui::Slider::new(&mut params.n_colors, 2..=8).text("colors"));
+        rslider(ui, &mut params.n_colors, 2..=8, "colors", 3);
         ui.horizontal(|ui| {
             for k in 0..params.n_colors.clamp(2, 8) as usize {
                 ui.color_edit_button_srgb(&mut params.colors[k]);
@@ -206,7 +226,7 @@ impl App {
                         remove = Some(i);
                     }
                 });
-                ui.add(egui::Slider::new(&mut l.opacity, 0.0..=1.0).text("opacity"));
+                rslider(ui, &mut l.opacity, 0.0..=1.0, "opacity", 1.0);
                 ui.horizontal(|ui| {
                     ui.label("speed");
                     for n in [1u32, 2, 4, 8, 16] {
@@ -225,31 +245,31 @@ impl App {
                             }
                         }
                     });
-                    ui.add(egui::Slider::new(&mut l.params.pitch, 0.5..=16.0).text("pitch"));
+                    rslider(ui, &mut l.params.pitch, 0.5..=16.0, "pitch", 1.0);
                 }
                 match l.effect {
                     Effect::Wave => {
-                        ui.add(egui::Slider::new(&mut l.params.width, 0.05..=1.0).text("width"));
+                        rslider(ui, &mut l.params.width, 0.05..=1.0, "width", 0.5);
                     }
                     Effect::Gradient => Self::palette_ui(ui, &mut l.params),
                     Effect::Radial => {
-                        ui.add(egui::Slider::new(&mut l.params.pitch, 0.5..=16.0).text("rings"));
+                        rslider(ui, &mut l.params.pitch, 0.5..=16.0, "rings", 1.0);
                         Self::palette_ui(ui, &mut l.params);
                     }
                     Effect::Sparkle => {
-                        ui.add(egui::Slider::new(&mut l.params.width, 0.02..=0.6).text("density"));
+                        rslider(ui, &mut l.params.width, 0.02..=0.6, "density", 0.5);
                         Self::palette_ui(ui, &mut l.params);
                     }
                     Effect::Plasma => {
-                        ui.add(egui::Slider::new(&mut l.params.pitch, 0.1..=8.0).text("zoom"));
+                        rslider(ui, &mut l.params.pitch, 0.1..=8.0, "zoom", 1.0);
                     }
                     Effect::Color => {}
                 }
                 ui.collapsing("Map", |ui| {
-                    ui.add(egui::Slider::new(&mut l.map.offset.0, -1.0..=1.0).text("offset x"));
-                    ui.add(egui::Slider::new(&mut l.map.offset.1, -1.0..=1.0).text("offset y"));
-                    ui.add(egui::Slider::new(&mut l.map.scale.0, 0.1..=4.0).text("scale x"));
-                    ui.add(egui::Slider::new(&mut l.map.scale.1, 0.1..=4.0).text("scale y"));
+                    rslider(ui, &mut l.map.offset.0, -1.0..=1.0, "offset x", 0.0);
+                    rslider(ui, &mut l.map.offset.1, -1.0..=1.0, "offset y", 0.0);
+                    rslider(ui, &mut l.map.scale.0, 0.1..=4.0, "scale x", 1.0);
+                    rslider(ui, &mut l.map.scale.1, 0.1..=4.0, "scale y", 1.0);
                 });
                 ui.separator();
             });
@@ -279,9 +299,8 @@ impl eframe::App for App {
         egui::TopBottomPanel::top("transport").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 let mut bpm = self.clock.bpm();
-                if ui.add(egui::Slider::new(&mut bpm, 20.0..=300.0).text("BPM")).changed() {
-                    self.clock.set_bpm(bpm);
-                }
+                rslider(ui, &mut bpm, 20.0..=300.0, "BPM", 120.0);
+                self.clock.set_bpm(bpm);
                 if ui.button("Tap").clicked() {
                     self.clock.tap();
                 }
