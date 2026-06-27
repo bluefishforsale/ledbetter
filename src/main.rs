@@ -12,6 +12,7 @@ mod layer;
 mod output;
 mod palette;
 mod patch;
+mod shader;
 
 fn main() -> eframe::Result<()> {
     let target = std::env::args()

@@ -3,7 +3,10 @@
 //! dedicated render thread + lock-free publish (ADR-0002) lands when multiple
 //! outputs make it pay.
 
+use std::sync::Arc;
+
 use eframe::egui;
+use eframe::glow;
 
 use crate::canvas::Canvas;
 use crate::clock::BeatClock;
@@ -14,11 +17,60 @@ use crate::layer::{Layer, MixMode};
 use crate::output::{ArtNet, Sacn, Transport};
 use crate::palette;
 use crate::patch::{self, Controller, Output, PixelFormat, Rig, Wiring};
+use crate::shader::{self, GpuShader};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum View {
     Rig,
     Canvas,
+}
+
+/// A deck's optional GLSL shader override. When enabled it renders the deck's
+/// canvas on the GPU instead of the CPU layer stack.
+struct DeckShader {
+    enabled: bool,
+    src: String,
+    dirty: bool,
+    compiled: Option<GpuShader>,
+    error: Option<String>,
+}
+
+impl DeckShader {
+    fn new(enabled: bool) -> Self {
+        DeckShader { enabled, src: shader::EXAMPLE.to_string(), dirty: true, compiled: None, error: None }
+    }
+}
+
+/// Render a deck: GLSL shader if enabled and the GL context is available,
+/// otherwise the CPU layer stack (also the fallback on compile error).
+fn render_deck(
+    sh: &mut DeckShader,
+    layers: &[Layer],
+    canvas: &mut Canvas,
+    beats: f32,
+    gl: Option<&Arc<glow::Context>>,
+) {
+    if sh.enabled && let Some(gl) = gl {
+        if sh.dirty {
+            match GpuShader::new(gl.clone(), canvas.w, canvas.h, &sh.src) {
+                Ok(s) => {
+                    sh.compiled = Some(s);
+                    sh.error = None;
+                }
+                Err(e) => {
+                    sh.compiled = None;
+                    sh.error = Some(e);
+                }
+            }
+            sh.dirty = false;
+        }
+        if let Some(s) = sh.compiled.as_mut() {
+            s.render(beats);
+            s.copy_into(canvas);
+            return;
+        }
+    }
+    crate::layer::render(layers, canvas, beats);
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -39,6 +91,8 @@ pub struct App {
     focus: Focus,
     rig: Rig,
     view: View,
+    shader_a: DeckShader,
+    shader_b: DeckShader,
     tex: Option<egui::TextureHandle>,
 }
 
@@ -89,6 +143,8 @@ impl App {
             focus: Focus::A,
             rig: Rig { controllers },
             view: View::Rig,
+            shader_a: DeckShader::new(false),
+            shader_b: DeckShader::new(true), // deck B shows the GLSL example by default
             tex: None,
         }
     }
@@ -205,10 +261,11 @@ impl App {
 }
 
 impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         let beats = self.clock.beats();
-        crate::layer::render(&self.deck_a.layers, &mut self.canvas_a, beats);
-        crate::layer::render(&self.deck_b.layers, &mut self.canvas_b, beats);
+        let gl = frame.gl().cloned();
+        render_deck(&mut self.shader_a, &self.deck_a.layers, &mut self.canvas_a, beats, gl.as_ref());
+        render_deck(&mut self.shader_b, &self.deck_b.layers, &mut self.canvas_b, beats, gl.as_ref());
         crossfader::blend(&self.canvas_a, &self.canvas_b, self.xfade, self.fade, &mut self.out);
 
         self.rig.send(&self.out);
@@ -256,6 +313,32 @@ impl eframe::App for App {
                 ui.selectable_value(&mut self.focus, Focus::A, "Deck A");
                 ui.selectable_value(&mut self.focus, Focus::B, "Deck B");
             });
+            {
+                let sh = match self.focus {
+                    Focus::A => &mut self.shader_a,
+                    Focus::B => &mut self.shader_b,
+                };
+                ui.collapsing("GLSL shader", |ui| {
+                    if ui.checkbox(&mut sh.enabled, "enable (overrides layers)").changed() {
+                        sh.dirty = true;
+                    }
+                    if sh.enabled {
+                        let r = ui.add(
+                            egui::TextEdit::multiline(&mut sh.src)
+                                .code_editor()
+                                .desired_rows(8)
+                                .desired_width(f32::INFINITY),
+                        );
+                        if r.changed() {
+                            sh.dirty = true;
+                        }
+                        if let Some(e) = &sh.error {
+                            ui.colored_label(egui::Color32::RED, e);
+                        }
+                    }
+                });
+            }
+            ui.separator();
             let deck = match self.focus {
                 Focus::A => &mut self.deck_a,
                 Focus::B => &mut self.deck_b,
