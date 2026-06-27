@@ -6,16 +6,19 @@ use crate::canvas::Canvas;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum FadeType {
-    Cross, // linear A -> B
-    White, // additive, bright through the middle
-    Black, // through black at the middle
+    Multiply, // geometric: darkens through the middle (a^(1-p) * b^p)
+    Cross,    // linear A -> B
+    White,    // additive, bright through the middle
+    Black,    // through black at the middle
 }
 
 impl FadeType {
-    pub const ALL: [FadeType; 3] = [FadeType::Cross, FadeType::White, FadeType::Black];
+    pub const ALL: [FadeType; 4] =
+        [FadeType::Multiply, FadeType::Cross, FadeType::White, FadeType::Black];
 
     pub fn name(self) -> &'static str {
         match self {
+            FadeType::Multiply => "Multiply",
             FadeType::Cross => "Cross",
             FadeType::White => "White",
             FadeType::Black => "Black",
@@ -26,12 +29,24 @@ impl FadeType {
 /// Blend two pixels by crossfader position and fade type.
 pub fn fade_pixel(a: [u8; 3], b: [u8; 3], pos: f32, fade: FadeType) -> [u8; 3] {
     let p = pos.clamp(0.0, 1.0);
+    // Multiply is multiplicative (per-channel geometric interpolation), not a
+    // weighted sum, so it gets its own path. Endpoints still pass through.
+    if let FadeType::Multiply = fade {
+        let mut out = [0u8; 3];
+        for i in 0..3 {
+            let an = a[i] as f32 / 255.0;
+            let bn = b[i] as f32 / 255.0;
+            out[i] = (an.powf(1.0 - p) * bn.powf(p) * 255.0).round().min(255.0) as u8;
+        }
+        return out;
+    }
     let (ga, gb) = match fade {
         FadeType::Cross => (1.0 - p, p),
         // both reach full gain at the midpoint -> additive bright
         FadeType::White => ((2.0 * (1.0 - p)).min(1.0), (2.0 * p).min(1.0)),
         // both fall to zero at the midpoint -> through black
         FadeType::Black => ((1.0 - 2.0 * p).max(0.0), (2.0 * p - 1.0).max(0.0)),
+        FadeType::Multiply => unreachable!(),
     };
     let mut out = [0u8; 3];
     for i in 0..3 {
@@ -77,5 +92,14 @@ mod tests {
     #[test]
     fn black_midpoint_is_black() {
         assert_eq!(fade_pixel(A, B, 0.5, FadeType::Black), [0, 0, 0]);
+    }
+
+    #[test]
+    fn multiply_midpoint_is_geometric_mean() {
+        // sqrt(a*b) per channel: sqrt(200*0)=0, etc. — darker than linear.
+        let r = fade_pixel([100, 0, 64], [100, 200, 64], 0.5, FadeType::Multiply);
+        assert_eq!(r[0], 100); // sqrt(100*100)=100
+        assert_eq!(r[1], 0); // sqrt(0*200)=0
+        assert_eq!(r[2], 64); // sqrt(64*64)=64
     }
 }

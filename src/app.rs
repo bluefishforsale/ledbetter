@@ -159,7 +159,7 @@ impl App {
             canvas_b: Canvas::new(w, h),
             out: Canvas::new(w, h),
             xfade: 0.0,
-            fade: FadeType::Cross,
+            fade: FadeType::Multiply,
             focus: Focus::A,
             rig: Rig { controllers },
             view: View::Rig,

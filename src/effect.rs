@@ -120,17 +120,24 @@ impl Effect {
                 let b = if f < w { (PI * f / w).sin() } else { 0.0 };
                 [(b * 255.0) as u8; 3]
             }
-            // Classic multi-sine plasma; `p.pitch` zooms about center (not tiled).
+            // Organic plasma: rotated (non-separable) waves plus two orbiting
+            // radial sources, with incommensurate frequencies so it never
+            // collapses into a grid. `p.pitch` zooms about center.
             Effect::Plasma => {
                 let z = p.pitch.max(0.05);
-                let x = (nx - 0.5) / z + 0.5;
-                let y = (ny - 0.5) / z + 0.5;
+                let x = (nx - 0.5) / z;
+                let y = (ny - 0.5) / z;
                 let t = phase * TAU;
-                let v = (x * 8.0 + t).sin()
-                    + (y * 8.0).sin()
-                    + ((x + y) * 8.0 + t).sin()
-                    + ((x * x + y * y).sqrt() * 8.0 - t).sin();
-                hsv(v / 8.0 + 0.5, 1.0, 1.0)
+                // orbiting source centers
+                let (c1x, c1y) = (0.4 * (t * 0.9).sin(), 0.4 * (t * 1.1).cos());
+                let (c2x, c2y) = (0.45 * (t * 1.3 + 2.0).cos(), 0.4 * (t * 0.7).sin());
+                let d1 = ((x - c1x).powi(2) + (y - c1y).powi(2)).sqrt();
+                let d2 = ((x - c2x).powi(2) + (y - c2y).powi(2)).sqrt();
+                let v = (x * 6.0 + t).sin()
+                    + ((x * 0.6 + y * 0.8) * 7.3 - t * 1.2).sin() // rotated, not axis-aligned
+                    + (d1 * 9.1 - t * 2.0).sin()
+                    + (d2 * 11.7 + t).sin();
+                hsv(v / 4.0 + 0.5, 1.0, 1.0)
             }
             // Concentric palette rings expanding from the canvas center; on a
             // spoke layout this radiates out every bar. pitch = ring count.
