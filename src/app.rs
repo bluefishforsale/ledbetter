@@ -12,6 +12,7 @@ use crate::deck::Deck;
 use crate::effect::{DIR_ARROWS, Effect};
 use crate::layer::{Layer, MixMode};
 use crate::output::{ArtNet, Sacn, Transport};
+use crate::palette;
 use crate::patch::{Controller, Output, PixelFormat, Rig, Wiring};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -146,6 +147,15 @@ impl App {
                         ui.add(egui::Slider::new(&mut l.params.width, 0.05..=1.0).text("width"));
                     }
                     Effect::Gradient => {
+                        egui::ComboBox::from_id_salt("palette")
+                            .selected_text("palette…")
+                            .show_ui(ui, |ui| {
+                                for pal in palette::PALETTES {
+                                    if ui.selectable_label(false, pal.name).clicked() {
+                                        palette::apply(&mut l.params, pal);
+                                    }
+                                }
+                            });
                         ui.add(egui::Slider::new(&mut l.params.n_colors, 2..=8).text("colors"));
                         ui.horizontal(|ui| {
                             for k in 0..l.params.n_colors.clamp(2, 8) as usize {

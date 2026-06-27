@@ -10,6 +10,7 @@ mod deck;
 mod effect;
 mod layer;
 mod output;
+mod palette;
 mod patch;
 
 fn main() -> eframe::Result<()> {
