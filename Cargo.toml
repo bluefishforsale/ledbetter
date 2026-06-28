@@ -8,3 +8,4 @@ edition = "2024"
 [dependencies]
 eframe = "0.33"
 hsluv = "0.3.1"
+stage_theme = { git = "https://github.com/generalelectrix/tunnels", branch = "main", version = "0.1.0" }

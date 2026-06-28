@@ -22,6 +22,10 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "ledbetter",
         eframe::NativeOptions::default(),
-        Box::new(move |_cc| Ok(Box::new(app::App::new(target)))),
+        Box::new(move |cc| {
+            // COBRA Commander's UI sizing + fonts + dark stage theme.
+            stage_theme::apply(&cc.egui_ctx);
+            Ok(Box::new(app::App::new(target)))
+        }),
     )
 }
