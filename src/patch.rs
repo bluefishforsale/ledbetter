@@ -3,11 +3,12 @@
 //! addresses are *derived* by auto-incrementing universes/channels from the
 //! Controller base. A Rig fans the canvas out to every Controller's transport.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::f32::consts::TAU;
+use std::net::Ipv4Addr;
 
 use crate::canvas::Canvas;
-use crate::output::Transport;
+use crate::output::{self, Sacn, Transport};
 
 /// How a pixel's RGB sample is laid into DMX channels.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -149,9 +150,38 @@ pub struct Controller {
 }
 
 impl Controller {
-    pub fn new(transport: Transport, base_universe: u16, outputs: Vec<Output>) -> Self {
+    fn build(transport: Transport, base_universe: u16, outputs: Vec<Output>) -> Self {
         let pixels = derive(base_universe, &outputs);
         Controller { transport, pixels }
+    }
+
+    /// Art-Net node at `addr`: builds one rust_dmx Art-Net port per derived
+    /// universe, all targeting that address.
+    pub fn artnet(addr: Ipv4Addr, base_universe: u16, outputs: Vec<Output>) -> Self {
+        let pixels = derive(base_universe, &outputs);
+        let unis: BTreeSet<u16> = pixels.iter().map(|p| p.universe).collect();
+        let ports = unis.into_iter().map(|u| (u, output::artnet_port(addr, u))).collect();
+        Controller { transport: Transport::Dmx(ports), pixels }
+    }
+
+    /// Offline rust_dmx ports for every derived universe (no hardware selected).
+    pub fn offline(base_universe: u16, outputs: Vec<Output>) -> Self {
+        let pixels = derive(base_universe, &outputs);
+        let unis: BTreeSet<u16> = pixels.iter().map(|p| p.universe).collect();
+        let ports = unis.into_iter().map(|u| (u, output::offline_port())).collect();
+        Controller { transport: Transport::Dmx(ports), pixels }
+    }
+
+    pub fn sacn(cid: [u8; 16], base_universe: u16, outputs: Vec<Output>) -> Self {
+        let transport = match Sacn::new(cid) {
+            Ok(s) => Transport::Sacn(s),
+            Err(_) => Transport::Wled, // socket failed; no-op
+        };
+        Self::build(transport, base_universe, outputs)
+    }
+
+    pub fn wled(base_universe: u16, outputs: Vec<Output>) -> Self {
+        Self::build(Transport::Wled, base_universe, outputs)
     }
 }
 
@@ -187,7 +217,7 @@ impl Rig {
                 }
             }
             for (uni, buf) in &bufs {
-                let _ = c.transport.send(*uni, buf);
+                c.transport.send(*uni, buf);
             }
         }
     }

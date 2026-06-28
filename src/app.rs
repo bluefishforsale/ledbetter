@@ -14,7 +14,6 @@ use crate::crossfader::{self, FadeType};
 use crate::deck::Deck;
 use crate::effect::{DIR_ARROWS, Effect};
 use crate::layer::{Layer, MixMode};
-use crate::output::{ArtNet, Sacn, Transport};
 use crate::palette;
 use crate::patch::{self, Controller, Output, PixelFormat, Rig, Wiring};
 use crate::shader::{self, GpuShader};
@@ -124,33 +123,37 @@ impl App {
         // a small RGBW+dimmer USB-DMX node, a serpentine WLED matrix tucked in a
         // corner) exercise every format/transport. USB-DMX/WLED are no-op stubs
         // until tested on hardware. Replaced by a loaded Patch file at M5.
-        let mut controllers = Vec::new();
-        if let Ok(a) = ArtNet::new(target) {
-            controllers.push(Controller::new(
-                Transport::ArtNet(a),
-                0,
-                patch::spokes(12, 20, PixelFormat::Rgb),
-            ));
-        }
-        if let Ok(s) = Sacn::new(*b"ledbetter-cid-01") {
-            let line = Output::line(PixelFormat::Grb, 40, (0.1, 0.95), (0.9, 0.95));
-            controllers.push(Controller::new(Transport::Sacn(s), 1, vec![line]));
-        }
-        controllers.push(Controller::new(
-            Transport::UsbDmx,
-            2,
-            vec![
-                Output::matrix(PixelFormat::Rgbw, 6, 6, Wiring::Contiguous)
-                    .placed((0.02, 0.02), (0.20, 0.20)),
-                Output::line(PixelFormat::Mono, 1, (0.95, 0.5), (0.95, 0.5)),
-            ],
-        ));
-        controllers.push(Controller::new(
-            Transport::Wled,
-            3,
-            vec![Output::matrix(PixelFormat::Rgb, 6, 6, Wiring::Serpentine)
-                .placed((0.80, 0.02), (0.98, 0.20))],
-        ));
+        // Art-Net target IP from the CLI arg (strip any :port; rust_dmx uses 6454).
+        let addr = target
+            .split(':')
+            .next()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(std::net::Ipv4Addr::LOCALHOST);
+        let controllers = vec![
+            // hero: 12 spokes on Art-Net via rust_dmx
+            Controller::artnet(addr, 0, patch::spokes(12, 20, PixelFormat::Rgb)),
+            // GRB line on sACN (hand-rolled)
+            Controller::sacn(
+                *b"ledbetter-cid-01",
+                1,
+                vec![Output::line(PixelFormat::Grb, 40, (0.1, 0.95), (0.9, 0.95))],
+            ),
+            // offline rust_dmx node: RGBW matrix + a Mono dimmer
+            Controller::offline(
+                2,
+                vec![
+                    Output::matrix(PixelFormat::Rgbw, 6, 6, Wiring::Contiguous)
+                        .placed((0.02, 0.02), (0.20, 0.20)),
+                    Output::line(PixelFormat::Mono, 1, (0.95, 0.5), (0.95, 0.5)),
+                ],
+            ),
+            // WLED stub: serpentine matrix
+            Controller::wled(
+                3,
+                vec![Output::matrix(PixelFormat::Rgb, 6, 6, Wiring::Serpentine)
+                    .placed((0.80, 0.02), (0.98, 0.20))],
+            ),
+        ];
         App {
             clock: BeatClock::new(120.0),
             deck_a: Deck::new(vec![Layer::new(Effect::Plasma)]),

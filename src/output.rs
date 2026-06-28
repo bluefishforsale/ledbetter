@@ -1,66 +1,58 @@
-//! Output transports. Art-Net and sACN are hand-rolled over UDP (the packets
-//! are fixed-format and this avoids a dependency, consistent with M0). USB-DMX
-//! and WLED are stubbed behind the same Transport enum — they need a serial
-//! dongle / a WLED box to verify, so they do nothing until tested on hardware.
+//! Output transports. DMX and Art-Net go through `rust_dmx` (COBRA's library):
+//! ArtnetDmxPort / EnttecDmxPort / OfflineDmxPort behind its `DmxPort` trait.
+//! Art-Net ports are built by deserializing their params (COBRA's typetag config
+//! approach). sACN is hand-rolled (rust_dmx has none); WLED is a stub.
 
+use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
+
+use rust_dmx::DmxPort;
 
 /// A per-Controller send path (ADR-0001: transport is a Controller property).
 pub enum Transport {
-    ArtNet(ArtNet),
+    /// rust_dmx ports keyed by Art-Net universe — one port per universe.
+    Dmx(BTreeMap<u16, Box<dyn DmxPort>>),
     Sacn(Sacn),
-    /// ponytail: needs a real USB-DMX dongle + the rust_dmx dep to verify.
-    /// Wire it up when hardware is on the bench; until then it is a no-op.
-    UsbDmx,
     /// ponytail: needs a WLED box (HTTP/DDP) to verify. No-op until tested.
     Wled,
 }
 
 impl Transport {
-    pub fn send(&mut self, universe: u16, dmx: &[u8]) -> std::io::Result<()> {
+    pub fn send(&mut self, universe: u16, dmx: &[u8]) {
         match self {
-            Transport::ArtNet(a) => a.send(universe, dmx),
-            Transport::Sacn(s) => s.send(universe, dmx),
-            Transport::UsbDmx | Transport::Wled => Ok(()),
+            Transport::Dmx(ports) => {
+                if let Some(p) = ports.get_mut(&universe) {
+                    let _ = p.write(dmx);
+                }
+            }
+            Transport::Sacn(s) => {
+                let _ = s.send(universe, dmx);
+            }
+            Transport::Wled => {}
         }
     }
 }
 
-// ---------------------------------------------------------------- Art-Net ----
+// --------------------------------------------------------------- rust_dmx ----
 
-pub struct ArtNet {
-    sock: UdpSocket,
-    target: String,
-    seq: u8,
-}
-
-impl ArtNet {
-    pub fn new(target: impl Into<String>) -> std::io::Result<Self> {
-        let sock = UdpSocket::bind("0.0.0.0:0")?;
-        Ok(ArtNet { sock, target: target.into(), seq: 1 })
-    }
-
-    pub fn send(&mut self, universe: u16, dmx: &[u8]) -> std::io::Result<()> {
-        self.sock.send_to(&artdmx(universe, self.seq, dmx), &self.target)?;
-        self.seq = self.seq.wrapping_add(1).max(1);
-        Ok(())
+/// An Art-Net port targeting `addr` on the given Art-Net universe, built by
+/// deserializing rust_dmx's port params (the path a loaded config would take).
+pub fn artnet_port(addr: Ipv4Addr, universe: u16) -> Box<dyn DmxPort> {
+    let cfg = format!(
+        "addr: {addr}\nport_address: {universe}\nshort_name: ledbetter\nlong_name: ledbetter\n"
+    );
+    match serde_yaml::from_str::<rust_dmx::ArtnetDmxPort>(&cfg) {
+        Ok(mut p) => {
+            let _ = p.open();
+            Box::new(p)
+        }
+        Err(_) => Box::new(rust_dmx::OfflineDmxPort),
     }
 }
 
-/// ArtDmx packet: 8-byte id + opcode 0x5000 + header + DMX data.
-pub fn artdmx(universe: u16, seq: u8, data: &[u8]) -> Vec<u8> {
-    let len = data.len();
-    let mut p = Vec::with_capacity(18 + len);
-    p.extend_from_slice(b"Art-Net\0");
-    p.extend_from_slice(&[0x00, 0x50]);
-    p.extend_from_slice(&[0x00, 0x0e]);
-    p.push(seq);
-    p.push(0);
-    p.push((universe & 0xff) as u8);
-    p.push(((universe >> 8) & 0x7f) as u8);
-    p.extend_from_slice(&[(len >> 8) as u8, (len & 0xff) as u8]);
-    p.extend_from_slice(data);
-    p
+/// An offline (no-op) rust_dmx port — for unpatched/unselected universes.
+pub fn offline_port() -> Box<dyn DmxPort> {
+    Box::new(rust_dmx::OfflineDmxPort)
 }
 
 // -------------------------------------------------------------------- sACN ----
@@ -151,13 +143,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn artdmx_header_is_wellformed() {
-        let p = artdmx(0x0103, 5, &[7u8; 512]);
-        assert_eq!(&p[0..8], b"Art-Net\0");
-        assert_eq!(&p[8..10], &[0x00, 0x50]);
-        assert_eq!(p[14], 0x03);
-        assert_eq!(p[15], 0x01);
-        assert_eq!(&p[16..18], &[0x02, 0x00]);
+    fn artnet_port_builds_real_port() {
+        // Confirms the serde-deserialize path yields an ArtnetDmxPort, not the
+        // Offline fallback (rust_dmx's Display names the kind).
+        let p = artnet_port(Ipv4Addr::LOCALHOST, 3);
+        assert!(format!("{p}").starts_with("ArtNet"), "got: {p}");
     }
 
     #[test]
