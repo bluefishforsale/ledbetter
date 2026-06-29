@@ -11,7 +11,6 @@ use eframe::glow;
 use crate::canvas::Canvas;
 use crate::clock::BeatClock;
 use crate::crossfader::{self, FadeType};
-use crate::deck::Deck;
 use crate::effect::{DIR_ARROWS, Effect};
 use crate::layer::{Layer, MixMode};
 use std::collections::HashMap;
@@ -29,27 +28,21 @@ enum View {
     Canvas,
 }
 
-/// A deck's optional GLSL shader override. When enabled it renders the deck's
-/// canvas on the GPU instead of the CPU layer stack.
-struct DeckShader {
-    enabled: bool,
-    src: String,
-    dirty: bool,
+const BANK_SIZE: usize = 16;
+
+/// A deck: a playhead that points at one bank place, plus its runtime GPU
+/// shader state (the shader *source* lives in the place; the compiled program
+/// is per-deck because each deck renders to its own canvas).
+struct DeckRt {
+    place: usize,
     compiled: Option<GpuShader>,
+    dirty: bool,
     error: Option<String>,
-    sliders: [f32; 8],
 }
 
-impl DeckShader {
-    fn new(enabled: bool) -> Self {
-        DeckShader {
-            enabled,
-            src: shader::EXAMPLE.to_string(),
-            dirty: true,
-            compiled: None,
-            error: None,
-            sliders: [0.5; 8],
-        }
+impl DeckRt {
+    fn new(place: usize) -> Self {
+        DeckRt { place, compiled: None, dirty: true, error: None }
     }
 }
 
@@ -73,36 +66,54 @@ fn rslider<N: egui::emath::Numeric>(
     });
 }
 
-/// Render a deck: GLSL shader if enabled and the GL context is available,
-/// otherwise the CPU layer stack (also the fallback on compile error).
+/// Render a deck's current place: GLSL shader if enabled and the GL context is
+/// available, otherwise the CPU layer stack (also the fallback on compile error).
 fn render_deck(
-    sh: &mut DeckShader,
-    layers: &[Layer],
+    rt: &mut DeckRt,
+    place: &show_file::DeckState,
     canvas: &mut Canvas,
     beats: f32,
     gl: Option<&Arc<glow::Context>>,
 ) {
-    if sh.enabled && let Some(gl) = gl {
-        if sh.dirty {
-            match GpuShader::new(gl.clone(), canvas.w, canvas.h, &sh.src) {
+    if place.shader.enabled && let Some(gl) = gl {
+        if rt.dirty {
+            match GpuShader::new(gl.clone(), canvas.w, canvas.h, &place.shader.src) {
                 Ok(s) => {
-                    sh.compiled = Some(s);
-                    sh.error = None;
+                    rt.compiled = Some(s);
+                    rt.error = None;
                 }
                 Err(e) => {
-                    sh.compiled = None;
-                    sh.error = Some(e);
+                    rt.compiled = None;
+                    rt.error = Some(e);
                 }
             }
-            sh.dirty = false;
+            rt.dirty = false;
         }
-        if let Some(s) = sh.compiled.as_mut() {
-            s.render(beats, &sh.sliders);
+        if let Some(s) = rt.compiled.as_mut() {
+            s.render(beats, &place.shader.sliders);
             s.copy_into(canvas);
             return;
         }
     }
-    crate::layer::render(layers, canvas, beats);
+    crate::layer::render(&place.layers, canvas, beats);
+}
+
+/// Build the default 16-place bank: a couple of seeded looks, the rest a plain
+/// Color layer to fill in live.
+fn default_bank() -> Vec<show_file::DeckState> {
+    let place = |layers, shader| show_file::DeckState { layers, shader };
+    let plain = |enabled, src: &str| show_file::ShaderState {
+        enabled,
+        src: src.to_string(),
+        sliders: [0.5; 8],
+    };
+    let mut bank: Vec<show_file::DeckState> = Vec::with_capacity(BANK_SIZE);
+    bank.push(place(vec![Layer::new(Effect::Plasma)], plain(false, shader::EXAMPLE)));
+    bank.push(place(vec![Layer::new(Effect::Gradient)], plain(true, shader::FEEDBACK_EXAMPLE)));
+    while bank.len() < BANK_SIZE {
+        bank.push(place(vec![Layer::new(Effect::Color)], plain(false, shader::EXAMPLE)));
+    }
+    bank
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -113,8 +124,9 @@ enum Focus {
 
 pub struct App {
     clock: BeatClock,
-    deck_a: Deck,
-    deck_b: Deck,
+    bank: Vec<show_file::DeckState>,
+    deck_a: DeckRt,
+    deck_b: DeckRt,
     canvas_a: Canvas,
     canvas_b: Canvas,
     out: Canvas,
@@ -123,8 +135,6 @@ pub struct App {
     focus: Focus,
     rig: Rig,
     view: View,
-    shader_a: DeckShader,
-    shader_b: DeckShader,
     tex: Option<egui::TextureHandle>,
     // DMX settings panel (COBRA-style runtime port selection; ephemeral)
     show_dmx: bool,
@@ -180,8 +190,9 @@ impl App {
         ];
         App {
             clock: BeatClock::new(120.0),
-            deck_a: Deck::new(vec![Layer::new(Effect::Plasma)]),
-            deck_b: Deck::new(vec![Layer::new(Effect::Gradient)]),
+            bank: default_bank(),
+            deck_a: DeckRt::new(0),
+            deck_b: DeckRt::new(1), // place 1 showcases the GLSL feedback example
             canvas_a: Canvas::new(w, h),
             canvas_b: Canvas::new(w, h),
             out: Canvas::new(w, h),
@@ -190,13 +201,6 @@ impl App {
             focus: Focus::A,
             rig: Rig { controllers },
             view: View::Rig,
-            shader_a: DeckShader::new(false),
-            shader_b: {
-                // deck B showcases the GLSL runner with the feedback example
-                let mut s = DeckShader::new(true);
-                s.src = shader::FEEDBACK_EXAMPLE.to_string();
-                s
-            },
             tex: None,
             show_dmx: false,
             scan_artnet: false,
@@ -217,34 +221,29 @@ impl App {
     }
 
     fn current_show(&self) -> show_file::ShowFile {
-        let deck_state = |deck: &Deck, sh: &DeckShader| show_file::DeckState {
-            layers: deck.layers.clone(),
-            shader: show_file::ShaderState {
-                enabled: sh.enabled,
-                src: sh.src.clone(),
-                sliders: sh.sliders,
-            },
-        };
         show_file::ShowFile {
-            deck_a: deck_state(&self.deck_a, &self.shader_a),
-            deck_b: deck_state(&self.deck_b, &self.shader_b),
+            bank: self.bank.clone(),
+            deck_a_place: self.deck_a.place,
+            deck_b_place: self.deck_b.place,
             fade: self.fade,
             bpm: self.clock.bpm(),
         }
     }
 
     fn apply_show(&mut self, sf: show_file::ShowFile) {
-        let apply = |deck: &mut Deck, sh: &mut DeckShader, ds: show_file::DeckState| {
-            deck.layers = ds.layers;
-            sh.enabled = ds.shader.enabled;
-            sh.src = ds.shader.src;
-            sh.sliders = ds.shader.sliders;
-            sh.dirty = true;
-            sh.compiled = None;
-            sh.error = None;
-        };
-        apply(&mut self.deck_a, &mut self.shader_a, sf.deck_a);
-        apply(&mut self.deck_b, &mut self.shader_b, sf.deck_b);
+        self.bank = sf.bank;
+        // Keep the bank exactly BANK_SIZE so the recall grid never indexes oob.
+        self.bank.resize_with(BANK_SIZE, || show_file::DeckState {
+            layers: vec![Layer::new(Effect::Color)],
+            shader: show_file::ShaderState {
+                enabled: false,
+                src: shader::EXAMPLE.to_string(),
+                sliders: [0.5; 8],
+            },
+        });
+        let clamp = |p: usize| p.min(BANK_SIZE - 1);
+        self.deck_a = DeckRt::new(clamp(sf.deck_a_place));
+        self.deck_b = DeckRt::new(clamp(sf.deck_b_place));
         self.fade = sf.fade;
         self.clock.set_bpm(sf.bpm);
     }
@@ -521,8 +520,9 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         let beats = self.clock.beats();
         let gl = frame.gl().cloned();
-        render_deck(&mut self.shader_a, &self.deck_a.layers, &mut self.canvas_a, beats, gl.as_ref());
-        render_deck(&mut self.shader_b, &self.deck_b.layers, &mut self.canvas_b, beats, gl.as_ref());
+        let (pa, pb) = (self.deck_a.place, self.deck_b.place);
+        render_deck(&mut self.deck_a, &self.bank[pa], &mut self.canvas_a, beats, gl.as_ref());
+        render_deck(&mut self.deck_b, &self.bank[pb], &mut self.canvas_b, beats, gl.as_ref());
         crossfader::blend(&self.canvas_a, &self.canvas_b, self.xfade, self.fade, &mut self.out);
 
         self.rig.send(&self.out);
@@ -574,58 +574,72 @@ impl eframe::App for App {
             });
         });
 
-        egui::SidePanel::right("decks").default_width(280.0).show(ctx, |ui| {
+        egui::SidePanel::right("decks").default_width(300.0).show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.label("Edit:");
                 ui.selectable_value(&mut self.focus, Focus::A, "Deck A");
                 ui.selectable_value(&mut self.focus, Focus::B, "Deck B");
             });
-            {
-                let sh = match self.focus {
-                    Focus::A => &mut self.shader_a,
-                    Focus::B => &mut self.shader_b,
-                };
-                ui.collapsing("GLSL shader", |ui| {
-                    if ui.checkbox(&mut sh.enabled, "enable (overrides layers)").changed() {
-                        sh.dirty = true;
-                    }
-                    if sh.enabled {
-                        egui::ComboBox::from_id_salt("shader_lib")
-                            .selected_text("load shader…")
-                            .show_ui(ui, |ui| {
-                                for s in shader::SHADERS {
-                                    if ui.selectable_label(false, s.name).clicked() {
-                                        sh.src = s.src.to_string();
-                                        sh.dirty = true;
-                                    }
-                                }
-                            });
-                        let r = ui.add(
-                            egui::TextEdit::multiline(&mut sh.src)
-                                .code_editor()
-                                .desired_rows(8)
-                                .desired_width(f32::INFINITY),
-                        );
-                        if r.changed() {
-                            sh.dirty = true;
-                        }
-                        if let Some(e) = &sh.error {
-                            ui.colored_label(egui::Color32::RED, e);
-                        }
-                        ui.label("controls (u_sliders)");
-                        for i in 0..8 {
-                            rslider(ui, &mut sh.sliders[i], 0.0..=1.0, &format!("k{i}"), 0.5);
-                        }
-                    }
-                });
-            }
-            ui.separator();
-            let deck = match self.focus {
+            let other = match self.focus {
+                Focus::A => self.deck_b.place,
+                Focus::B => self.deck_a.place,
+            };
+            let rt = match self.focus {
                 Focus::A => &mut self.deck_a,
                 Focus::B => &mut self.deck_b,
             };
+
+            // Recall grid: 16 storage places; clicking recalls the focused deck.
+            ui.label(format!("Place {} · other deck on {}", rt.place, other));
+            egui::Grid::new("bank_grid").spacing([3.0, 3.0]).show(ui, |ui| {
+                for i in 0..BANK_SIZE {
+                    if ui.selectable_label(rt.place == i, format!("{i:02}")).clicked() {
+                        rt.place = i;
+                        rt.dirty = true; // new place may carry a different shader
+                    }
+                    if (i + 1) % 4 == 0 {
+                        ui.end_row();
+                    }
+                }
+            });
             ui.separator();
-            egui::ScrollArea::vertical().show(ui, |ui| Self::layer_panel(ui, &mut deck.layers));
+
+            let place = &mut self.bank[rt.place];
+            ui.collapsing("GLSL shader", |ui| {
+                if ui.checkbox(&mut place.shader.enabled, "enable (overrides layers)").changed() {
+                    rt.dirty = true;
+                }
+                if place.shader.enabled {
+                    egui::ComboBox::from_id_salt("shader_lib")
+                        .selected_text("load shader…")
+                        .show_ui(ui, |ui| {
+                            for s in shader::SHADERS {
+                                if ui.selectable_label(false, s.name).clicked() {
+                                    place.shader.src = s.src.to_string();
+                                    rt.dirty = true;
+                                }
+                            }
+                        });
+                    let r = ui.add(
+                        egui::TextEdit::multiline(&mut place.shader.src)
+                            .code_editor()
+                            .desired_rows(8)
+                            .desired_width(f32::INFINITY),
+                    );
+                    if r.changed() {
+                        rt.dirty = true;
+                    }
+                    if let Some(e) = &rt.error {
+                        ui.colored_label(egui::Color32::RED, e);
+                    }
+                    ui.label("controls (u_sliders)");
+                    for i in 0..8 {
+                        rslider(ui, &mut place.shader.sliders[i], 0.0..=1.0, &format!("k{i}"), 0.5);
+                    }
+                }
+            });
+            ui.separator();
+            egui::ScrollArea::vertical().show(ui, |ui| Self::layer_panel(ui, &mut place.layers));
         });
 
         egui::CentralPanel::default().show(ctx, |ui| match self.view {
