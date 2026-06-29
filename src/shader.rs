@@ -129,13 +129,95 @@ void main() {
 }
 "#;
 
+const VORONOI_EDGES: &str = r#"vec2 h2(vec2 p) {
+    return fract(sin(vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)))) * 43758.5);
+}
+void main() {
+    vec2 uv = gl_FragCoord.xy / u_resolution * (2.0 + u_sliders[0] * 12.0);
+    vec2 g = floor(uv), f = fract(uv);
+    float d1 = 8.0, d2 = 8.0;
+    for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) {
+        vec2 o = vec2(float(x), float(y));
+        vec2 pt = o + (0.5 + 0.5 * sin(u_time * (0.3 + u_sliders[1]) + 6.2831 * h2(g + o))) - f;
+        float d = dot(pt, pt);
+        if (d < d1) { d2 = d1; d1 = d; } else if (d < d2) { d2 = d; }
+    }
+    float border = 1.0 - smoothstep(0.0, 0.06, sqrt(d2) - sqrt(d1));
+    fragColor = vec4(border * vec3(1.0, 0.8, 0.4), 1.0);
+}
+"#;
+
+const SPIRAL_DOTS: &str = r#"void main() {
+    vec2 p = (gl_FragCoord.xy - 0.5 * u_resolution) / u_resolution.y;
+    float n = 40.0 + floor(u_sliders[0] * 160.0);
+    float rot = u_time * (0.2 + u_sliders[1]);
+    float c = 0.0;
+    for (float i = 0.0; i < 200.0; i++) {
+        if (i >= n) break;
+        float a = i * 0.5 + rot;
+        float r = 0.03 * sqrt(i) * (1.0 + u_sliders[2] * 2.0);
+        c = max(c, smoothstep(0.02, 0.0, length(p - vec2(cos(a), sin(a)) * r)));
+    }
+    fragColor = vec4(c * (0.5 + 0.5 * cos(u_time + vec3(0.0, 2.0, 4.0))), 1.0);
+}
+"#;
+
+const FIBONACCI: &str = r#"void main() {
+    vec2 p = (gl_FragCoord.xy - 0.5 * u_resolution) / u_resolution.y;
+    float n = 80.0 + floor(u_sliders[0] * 220.0);
+    float ga = 2.39996323;            // golden angle (radians)
+    float scale = 0.45 * (0.5 + u_sliders[1]);
+    float c = 0.0;
+    for (float i = 0.0; i < 300.0; i++) {
+        if (i >= n) break;
+        float a = i * ga + u_time * (0.1 + u_sliders[2]);
+        float r = scale * sqrt(i / n);
+        c = max(c, smoothstep(0.015, 0.0, length(p - vec2(cos(a), sin(a)) * r)));
+    }
+    fragColor = vec4(c * (0.5 + 0.5 * cos(length(p) * 8.0 + u_time + vec3(0.0, 2.0, 4.0))), 1.0);
+}
+"#;
+
+const LIGHTNING: &str = r#"float h(float x) { return fract(sin(x * 127.1) * 43758.5); }
+float n1(float x) { float i = floor(x), f = fract(x); return mix(h(i), h(i + 1.0), f * f * (3.0 - 2.0 * f)); }
+void main() {
+    vec2 uv = gl_FragCoord.xy / u_resolution;
+    float seed = floor(u_time * 8.0);
+    float flick = step(0.35, h(seed));
+    float jag = (n1(uv.y * 8.0 + seed * 13.0) - 0.5) * (0.3 + u_sliders[0]);
+    float bolt = 0.5 + jag + 0.05 * sin(uv.y * 40.0 + u_time);
+    float d = abs(uv.x - bolt);
+    float core = smoothstep(0.015, 0.0, d);
+    float glow = smoothstep(0.10 * (0.5 + u_sliders[1]), 0.0, d) * 0.35;
+    fragColor = vec4((core + glow) * vec3(0.6, 0.7, 1.0) * flick, 1.0);
+}
+"#;
+
+const EDGE_TRACE: &str = r#"float fld(vec2 p) {
+    return sin(p.x * 8.0 + u_time) + sin(p.y * 8.0 - u_time) + sin((p.x + p.y) * 6.0);
+}
+void main() {
+    vec2 uv = gl_FragCoord.xy / u_resolution;
+    float e = (1.0 + u_sliders[0] * 4.0) / u_resolution.y;
+    float dx = fld(uv + vec2(e, 0.0)) - fld(uv - vec2(e, 0.0));
+    float dy = fld(uv + vec2(0.0, e)) - fld(uv - vec2(0.0, e));
+    float edge = smoothstep(0.0, 0.05 + u_sliders[1] * 0.5, length(vec2(dx, dy)));
+    fragColor = vec4(edge * (0.4 + 0.6 * cos(u_time + vec3(0.0, 2.0, 4.0))), 1.0);
+}
+"#;
+
 pub const SHADERS: &[Shader] = &[
     Shader { name: "Plasma", src: EXAMPLE },
     Shader { name: "Tunnel (feedback)", src: FEEDBACK_EXAMPLE },
     Shader { name: "Rings", src: RINGS },
     Shader { name: "Kaleidoscope", src: KALEIDOSCOPE },
     Shader { name: "Voronoi", src: VORONOI },
+    Shader { name: "Voronoi Edges", src: VORONOI_EDGES },
     Shader { name: "Spiral", src: SPIRAL },
+    Shader { name: "Spiral Dots", src: SPIRAL_DOTS },
+    Shader { name: "Fibonacci", src: FIBONACCI },
+    Shader { name: "Lightning", src: LIGHTNING },
+    Shader { name: "Edge Trace", src: EDGE_TRACE },
     Shader { name: "Warp", src: WARP },
     Shader { name: "Starfield", src: STARFIELD },
 ];
