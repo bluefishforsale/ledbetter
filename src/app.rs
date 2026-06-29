@@ -14,6 +14,9 @@ use crate::crossfader::{self, FadeType};
 use crate::deck::Deck;
 use crate::effect::{DIR_ARROWS, Effect};
 use crate::layer::{Layer, MixMode};
+use std::time::Duration;
+
+use crate::output::Transport;
 use crate::palette;
 use crate::patch::{self, Controller, Output, PixelFormat, Rig, Wiring};
 use crate::shader::{self, GpuShader};
@@ -113,6 +116,11 @@ pub struct App {
     shader_a: DeckShader,
     shader_b: DeckShader,
     tex: Option<egui::TextureHandle>,
+    // DMX settings panel (COBRA-style runtime port selection; ephemeral)
+    show_dmx: bool,
+    scan_artnet: bool,
+    artnet_timeout: String,
+    available_ports: Vec<Box<dyn rust_dmx::DmxPort>>,
 }
 
 impl App {
@@ -174,6 +182,10 @@ impl App {
                 s
             },
             tex: None,
+            show_dmx: false,
+            scan_artnet: true,
+            artnet_timeout: "1.5".to_string(),
+            available_ports: Vec::new(),
         }
     }
 
@@ -183,6 +195,65 @@ impl App {
             rgba.extend_from_slice(&[*r, *g, *b, 255]);
         }
         egui::ColorImage::from_rgba_unmultiplied([self.out.w, self.out.h], &rgba)
+    }
+
+    /// COBRA-style DMX port selection: scan available ports, assign one per
+    /// universe. Ephemeral — re-select each launch (persistence at M5).
+    fn dmx_window(&mut self, ctx: &egui::Context) {
+        let mut open = self.show_dmx;
+        let mut scan = false;
+        let mut assign: Option<(usize, u16, usize)> = None; // (controller, universe, avail idx)
+        egui::Window::new("DMX / Output").open(&mut open).show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut self.scan_artnet, "Art-Net");
+                ui.label("timeout");
+                ui.add(egui::TextEdit::singleline(&mut self.artnet_timeout).desired_width(40.0));
+                if ui.button("Scan ports").clicked() {
+                    scan = true;
+                }
+            });
+            ui.label(format!("{} ports available", self.available_ports.len()));
+            ui.separator();
+            for (ci, c) in self.rig.controllers.iter().enumerate() {
+                let Transport::Dmx(ports) = &c.transport else { continue };
+                ui.label(format!("Controller {ci}"));
+                for (u, p) in ports {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("U{u}: {p}"));
+                        egui::ComboBox::from_id_salt((ci, u))
+                            .selected_text("assign…")
+                            .show_ui(ui, |ui| {
+                                for (j, ap) in self.available_ports.iter().enumerate() {
+                                    if ui.selectable_label(false, format!("{ap}")).clicked() {
+                                        assign = Some((ci, *u, j));
+                                    }
+                                }
+                            });
+                    });
+                }
+                ui.separator();
+            }
+        });
+        self.show_dmx = open;
+        if scan {
+            let browse = if self.scan_artnet {
+                Some(Duration::from_secs_f32(self.artnet_timeout.parse().unwrap_or(1.5)))
+            } else {
+                None
+            };
+            if let Ok(ports) = rust_dmx::available_ports(browse) {
+                self.available_ports = ports;
+            }
+        }
+        if let Some((ci, u, j)) = assign
+            && j < self.available_ports.len()
+        {
+            let mut port = self.available_ports.remove(j);
+            let _ = port.open();
+            if let Transport::Dmx(ports) = &mut self.rig.controllers[ci].transport {
+                ports.insert(u, port);
+            }
+        }
     }
 
     fn palette_ui(ui: &mut egui::Ui, params: &mut crate::effect::Params) {
@@ -316,6 +387,8 @@ impl eframe::App for App {
                 ui.separator();
                 ui.selectable_value(&mut self.view, View::Rig, "Rig");
                 ui.selectable_value(&mut self.view, View::Canvas, "Canvas");
+                ui.separator();
+                ui.toggle_value(&mut self.show_dmx, "DMX");
             });
         });
 
@@ -404,6 +477,10 @@ impl eframe::App for App {
                 }
             }
         });
+
+        if self.show_dmx {
+            self.dmx_window(ctx);
+        }
 
         ctx.request_repaint();
     }
