@@ -2,9 +2,11 @@
 //! into the output canvas (CONTEXT.md "Crossfader", ADR-0002 pipeline).
 //! Position 0.0 = full Deck A, 1.0 = full Deck B.
 
+use serde::{Deserialize, Serialize};
+
 use crate::canvas::Canvas;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FadeType {
     Multiply, // geometric: darkens through the middle (a^(1-p) * b^p)
     Cross,    // linear A -> B

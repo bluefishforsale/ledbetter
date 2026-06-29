@@ -3,10 +3,12 @@
 //! (CONTEXT.md "Layer"). The bottom layer has nothing beneath it, so its mix
 //! mode is ignored — it lays down the base.
 
+use serde::{Deserialize, Serialize};
+
 use crate::canvas::Canvas;
 use crate::effect::{Effect, Params};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MixMode {
     Normal,
     Multiply,
@@ -42,7 +44,7 @@ impl MixMode {
 /// Scale zooms about center; effects are periodic/continuous so the raw
 /// (unbounded) coord is passed through — seamless, never clamped or tiled.
 /// ponytail: offset + scale only. Rotation lands when a look needs it.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Serialize, Deserialize)]
 pub struct Map {
     pub offset: (f32, f32),
     pub scale: (f32, f32),
@@ -64,6 +66,7 @@ impl Map {
     }
 }
 
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Layer {
     pub effect: Effect,
     pub map: Map,

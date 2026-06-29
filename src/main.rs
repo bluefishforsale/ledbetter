@@ -13,6 +13,7 @@ mod output;
 mod palette;
 mod patch;
 mod shader;
+mod show_file;
 
 fn main() -> eframe::Result<()> {
     let target = std::env::args()

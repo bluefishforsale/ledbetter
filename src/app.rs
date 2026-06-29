@@ -21,6 +21,7 @@ use crate::output::{Transport, offline_port};
 use crate::palette;
 use crate::patch::{self, Controller, Output, PixelFormat, Rig, Wiring};
 use crate::shader::{self, GpuShader};
+use crate::show_file;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum View {
@@ -134,6 +135,8 @@ pub struct App {
     selected_port: Option<usize>,
     /// Per-(controller, universe) fps text buffers.
     framerate_text: HashMap<(usize, u16), String>,
+    /// Last save/load result, shown in the transport bar.
+    status: String,
 }
 
 impl App {
@@ -201,6 +204,7 @@ impl App {
             available_ports: Vec::new(),
             selected_port: None,
             framerate_text: HashMap::new(),
+            status: String::new(),
         }
     }
 
@@ -210,6 +214,71 @@ impl App {
             rgba.extend_from_slice(&[*r, *g, *b, 255]);
         }
         egui::ColorImage::from_rgba_unmultiplied([self.out.w, self.out.h], &rgba)
+    }
+
+    fn current_show(&self) -> show_file::ShowFile {
+        let deck_state = |deck: &Deck, sh: &DeckShader| show_file::DeckState {
+            layers: deck.layers.clone(),
+            shader: show_file::ShaderState {
+                enabled: sh.enabled,
+                src: sh.src.clone(),
+                sliders: sh.sliders,
+            },
+        };
+        show_file::ShowFile {
+            deck_a: deck_state(&self.deck_a, &self.shader_a),
+            deck_b: deck_state(&self.deck_b, &self.shader_b),
+            fade: self.fade,
+            bpm: self.clock.bpm(),
+        }
+    }
+
+    fn apply_show(&mut self, sf: show_file::ShowFile) {
+        let apply = |deck: &mut Deck, sh: &mut DeckShader, ds: show_file::DeckState| {
+            deck.layers = ds.layers;
+            sh.enabled = ds.shader.enabled;
+            sh.src = ds.shader.src;
+            sh.sliders = ds.shader.sliders;
+            sh.dirty = true;
+            sh.compiled = None;
+            sh.error = None;
+        };
+        apply(&mut self.deck_a, &mut self.shader_a, sf.deck_a);
+        apply(&mut self.deck_b, &mut self.shader_b, sf.deck_b);
+        self.fade = sf.fade;
+        self.clock.set_bpm(sf.bpm);
+    }
+
+    fn save_dialog(&mut self) {
+        let Some(mut path) = rfd::FileDialog::new()
+            .add_filter("ledbetter show", &["ledbetter"])
+            .set_file_name("show.ledbetter")
+            .save_file()
+        else {
+            return;
+        };
+        if path.extension().is_none() {
+            path.set_extension("ledbetter");
+        }
+        self.status = match show_file::save(&path, &self.current_show()) {
+            Ok(()) => format!("saved {}", path.display()),
+            Err(e) => format!("save failed: {e}"),
+        };
+    }
+
+    fn load_dialog(&mut self) {
+        let Some(path) =
+            rfd::FileDialog::new().add_filter("ledbetter show", &["ledbetter"]).pick_file()
+        else {
+            return;
+        };
+        self.status = match show_file::load(&path) {
+            Ok(sf) => {
+                self.apply_show(sf);
+                format!("loaded {}", path.display())
+            }
+            Err(e) => format!("load failed: {e}"),
+        };
     }
 
     /// COBRA-style DMX Ports page: refresh + Scan ArtNet, a selectable port pool
@@ -478,6 +547,15 @@ impl eframe::App for App {
                 ui.selectable_value(&mut self.view, View::Canvas, "Canvas");
                 ui.separator();
                 ui.toggle_value(&mut self.show_dmx, "DMX");
+                if ui.button("Save").clicked() {
+                    self.save_dialog();
+                }
+                if ui.button("Load").clicked() {
+                    self.load_dialog();
+                }
+                if !self.status.is_empty() {
+                    ui.label(&self.status);
+                }
             });
         });
 

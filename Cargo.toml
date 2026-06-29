@@ -8,6 +8,8 @@ edition = "2024"
 [dependencies]
 eframe = "0.33"
 hsluv = "0.3.1"
+rfd = "0.17.2"
 rust_dmx = "0.10"
+serde = { version = "1.0.228", features = ["derive"] }
 serde_yaml = "0.9"
 stage_theme = { git = "https://github.com/generalelectrix/tunnels", branch = "main", version = "0.1.0" }

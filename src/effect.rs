@@ -3,13 +3,15 @@
 //! ponytail: an enum of 4 known effects, not a trait+registry. The linkme
 //! registry earns its place when effects become user-extensible.
 
+use serde::{Deserialize, Serialize};
+
 use crate::canvas::{hsluv_lerp, hsv};
 use std::f32::consts::{FRAC_PI_4, PI, TAU};
 
 /// Per-layer effect parameters. Different effects use different fields (see
 /// each match arm). Kept off the Effect enum so the picker stays a simple Copy
 /// value and params survive switching effects. Fixed-size palette keeps Copy.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Serialize, Deserialize)]
 pub struct Params {
     pub dir: u8,                // 0..8, direction in 45° steps (Gradient/Wave)
     pub pitch: f32,             // spatial repetitions (Gradient/Wave) / zoom (Plasma)
@@ -63,7 +65,7 @@ fn dir_vec(dir: u8) -> (f32, f32) {
     (a.cos(), a.sin())
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Effect {
     Color,
     Gradient,
