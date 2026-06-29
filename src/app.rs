@@ -14,9 +14,10 @@ use crate::crossfader::{self, FadeType};
 use crate::deck::Deck;
 use crate::effect::{DIR_ARROWS, Effect};
 use crate::layer::{Layer, MixMode};
+use std::collections::HashMap;
 use std::time::Duration;
 
-use crate::output::Transport;
+use crate::output::{Transport, offline_port};
 use crate::palette;
 use crate::patch::{self, Controller, Output, PixelFormat, Rig, Wiring};
 use crate::shader::{self, GpuShader};
@@ -121,6 +122,10 @@ pub struct App {
     scan_artnet: bool,
     artnet_timeout: String,
     available_ports: Vec<Box<dyn rust_dmx::DmxPort>>,
+    /// Selected port in the pool; None = the offline option.
+    selected_port: Option<usize>,
+    /// Per-(controller, universe) fps text buffers.
+    framerate_text: HashMap<(usize, u16), String>,
 }
 
 impl App {
@@ -183,9 +188,11 @@ impl App {
             },
             tex: None,
             show_dmx: false,
-            scan_artnet: true,
-            artnet_timeout: "1.5".to_string(),
+            scan_artnet: false,
+            artnet_timeout: "3".to_string(),
             available_ports: Vec::new(),
+            selected_port: None,
+            framerate_text: HashMap::new(),
         }
     }
 
@@ -197,62 +204,131 @@ impl App {
         egui::ColorImage::from_rgba_unmultiplied([self.out.w, self.out.h], &rgba)
     }
 
-    /// COBRA-style DMX port selection: scan available ports, assign one per
-    /// universe. Ephemeral — re-select each launch (persistence at M5).
+    /// COBRA-style DMX Ports page: refresh + Scan ArtNet, a selectable port pool
+    /// (offline + discovered), Assign per universe, and a per-universe fps field
+    /// for framerate-capable ports. Ephemeral — re-select each launch (M5 Patch
+    /// file will persist it). Single-threaded: mutates the Rig directly.
     fn dmx_window(&mut self, ctx: &egui::Context) {
         let mut open = self.show_dmx;
-        let mut scan = false;
-        let mut assign: Option<(usize, u16, usize)> = None; // (controller, universe, avail idx)
-        egui::Window::new("DMX / Output").open(&mut open).show(ctx, |ui| {
+        let artnet_valid = !self.scan_artnet
+            || self.artnet_timeout.parse::<f32>().map(|v| v > 0.0).unwrap_or(false);
+        let offline_name = rust_dmx::OfflineDmxPort.to_string();
+        let err_color = egui::Color32::from_rgb(180, 60, 60);
+
+        let mut refresh = false;
+        let mut assign: Option<(usize, u16)> = None; // assign selected port to (controller, universe)
+        let mut set_fps: Option<(usize, u16, u8)> = None;
+
+        egui::Window::new("DMX Ports").open(&mut open).show(ctx, |ui| {
+            // Refresh + ArtNet scan options.
             ui.horizontal(|ui| {
-                ui.checkbox(&mut self.scan_artnet, "Art-Net");
-                ui.label("timeout");
-                ui.add(egui::TextEdit::singleline(&mut self.artnet_timeout).desired_width(40.0));
-                if ui.button("Scan ports").clicked() {
-                    scan = true;
+                if ui.add_enabled(artnet_valid, egui::Button::new("Refresh")).clicked() {
+                    refresh = true;
+                }
+                ui.checkbox(&mut self.scan_artnet, "Scan ArtNet");
+                if self.scan_artnet {
+                    ui.label("Timeout:");
+                    ui.add(egui::TextEdit::singleline(&mut self.artnet_timeout).desired_width(30.0));
+                    ui.label("sec");
+                    if !artnet_valid {
+                        ui.colored_label(err_color, "must be a positive number");
+                    }
                 }
             });
-            ui.label(format!("{} ports available", self.available_ports.len()));
             ui.separator();
-            for (ci, c) in self.rig.controllers.iter().enumerate() {
-                let Transport::Dmx(ports) = &c.transport else { continue };
-                ui.label(format!("Controller {ci}"));
-                for (u, p) in ports {
-                    ui.horizontal(|ui| {
-                        ui.label(format!("U{u}: {p}"));
-                        egui::ComboBox::from_id_salt((ci, u))
-                            .selected_text("assign…")
-                            .show_ui(ui, |ui| {
-                                for (j, ap) in self.available_ports.iter().enumerate() {
-                                    if ui.selectable_label(false, format!("{ap}")).clicked() {
-                                        assign = Some((ci, *u, j));
-                                    }
-                                }
-                            });
-                    });
+
+            // Available ports pool (offline + discovered), single selection.
+            ui.label(format!("Available Ports ({})", self.available_ports.len() + 1));
+            let mut new_sel: Option<Option<usize>> = None;
+            egui::ScrollArea::vertical().id_salt("dmx_pool").max_height(140.0).show(ui, |ui| {
+                if ui.selectable_label(self.selected_port.is_none(), &offline_name).clicked() {
+                    new_sel = Some(None);
                 }
-                ui.separator();
+                for (i, p) in self.available_ports.iter().enumerate() {
+                    if ui.selectable_label(self.selected_port == Some(i), p.to_string()).clicked() {
+                        new_sel = Some(Some(i));
+                    }
+                }
+            });
+            if let Some(s) = new_sel {
+                self.selected_port = s;
             }
+            ui.separator();
+
+            // Universe list across DMX controllers.
+            let selected_name = match self.selected_port {
+                None => offline_name.clone(),
+                Some(i) => {
+                    self.available_ports.get(i).map(|p| p.to_string()).unwrap_or(offline_name.clone())
+                }
+            };
+            egui::ScrollArea::vertical().id_salt("dmx_universes").max_height(260.0).show(ui, |ui| {
+                egui::Grid::new("dmx_universe_grid").striped(true).show(ui, |ui| {
+                    for (ci, c) in self.rig.controllers.iter().enumerate() {
+                        let Transport::Dmx(ports) = &c.transport else { continue };
+                        for (u, p) in ports {
+                            let current = p.to_string();
+                            let same = current == selected_name;
+                            if ui
+                                .add_enabled(!same, egui::Button::new("Assign"))
+                                .on_hover_text(format!("Assign {selected_name}"))
+                                .clicked()
+                            {
+                                assign = Some((ci, *u));
+                            }
+                            ui.label(format!("Ctrl {ci} · Univ {u}"));
+                            ui.label(&current);
+                            if let Some(fps) = p.get_framerate() {
+                                let buf = self
+                                    .framerate_text
+                                    .entry((ci, *u))
+                                    .or_insert_with(|| fps.to_string());
+                                let resp =
+                                    ui.add(egui::TextEdit::singleline(buf).desired_width(40.0));
+                                if resp.lost_focus() {
+                                    match buf.parse::<u8>() {
+                                        Ok(f) if f > 0 => set_fps = Some((ci, *u, f)),
+                                        _ => *buf = fps.to_string(),
+                                    }
+                                } else if !resp.has_focus() && *buf != fps.to_string() {
+                                    *buf = fps.to_string();
+                                }
+                                ui.label("fps");
+                            }
+                            ui.end_row();
+                        }
+                    }
+                });
+            });
         });
         self.show_dmx = open;
-        if scan {
+
+        if refresh {
             let browse = if self.scan_artnet {
-                Some(Duration::from_secs_f32(self.artnet_timeout.parse().unwrap_or(1.5)))
+                Some(Duration::from_secs_f32(self.artnet_timeout.parse::<f32>().unwrap_or(3.0).max(0.5)))
             } else {
                 None
             };
             if let Ok(ports) = rust_dmx::available_ports(browse) {
                 self.available_ports = ports;
+                self.selected_port = None;
             }
         }
-        if let Some((ci, u, j)) = assign
-            && j < self.available_ports.len()
-        {
-            let mut port = self.available_ports.remove(j);
+        if let Some((ci, u)) = assign {
+            let mut port = match self.selected_port.take() {
+                Some(i) if i < self.available_ports.len() => self.available_ports.remove(i),
+                _ => offline_port(),
+            };
             let _ = port.open();
             if let Transport::Dmx(ports) = &mut self.rig.controllers[ci].transport {
                 ports.insert(u, port);
             }
+        }
+        if let Some((ci, u, f)) = set_fps
+            && let Transport::Dmx(ports) = &mut self.rig.controllers[ci].transport
+            && let Some(p) = ports.get_mut(&u)
+        {
+            let _ = p.set_framerate(f);
         }
     }
 
