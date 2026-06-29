@@ -382,14 +382,19 @@ impl App {
                     }
                 });
                 rslider(ui, &mut l.opacity, 0.0..=1.0, "opacity", 1.0);
-                ui.horizontal(|ui| {
-                    ui.label("speed");
-                    for n in [1u32, 2, 4, 8, 16] {
-                        if ui.selectable_label(l.beats_per_cycle == n, format!("{n}/1")).clicked() {
-                            l.beats_per_cycle = n;
+                ui.label("speed (beats per cycle)");
+                for row in [
+                    [(0.25, "1/4"), (0.5, "1/2"), (1.0, "1/1"), (2.0, "2/1")],
+                    [(4.0, "4/1"), (8.0, "8/1"), (16.0, "16/1"), (32.0, "32/1")],
+                ] {
+                    ui.horizontal(|ui| {
+                        for (v, label) in row {
+                            if ui.selectable_label(l.beats_per_cycle == v, label).clicked() {
+                                l.beats_per_cycle = v;
+                            }
                         }
-                    }
-                });
+                    });
+                }
                 if l.effect.directional() {
                     ui.horizontal(|ui| {
                         ui.label("dir");

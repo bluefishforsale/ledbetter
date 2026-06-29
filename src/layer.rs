@@ -70,9 +70,10 @@ pub struct Layer {
     pub mix: MixMode,
     pub opacity: f32,
     pub enabled: bool,
-    /// Beats per cycle: how many beats one loop of this layer's effect spans
-    /// (1 = every beat, 16 = every 16 beats). Per-layer, not per-deck.
-    pub beats_per_cycle: u32,
+    /// Beats per cycle: how many beats one loop of this layer's effect spans.
+    /// Fractions run faster than one cycle/beat (1/4 = 4 cycles/beat); whole
+    /// numbers run slower (32/1 = one cycle per 32 beats). Per-layer.
+    pub beats_per_cycle: f32,
     pub params: Params,
 }
 
@@ -84,14 +85,14 @@ impl Layer {
             mix: MixMode::Normal,
             opacity: 1.0,
             enabled: true,
-            beats_per_cycle: 1,
+            beats_per_cycle: 4.0,
             params: Params::default(),
         }
     }
 
     /// This layer's effect phase in [0,1) at the monotonic beat count.
     fn phase(&self, beats: f32) -> f32 {
-        (beats / self.beats_per_cycle.max(1) as f32).rem_euclid(1.0)
+        (beats / self.beats_per_cycle.max(0.0001)).rem_euclid(1.0)
     }
 }
 
@@ -201,7 +202,7 @@ mod tests {
     #[test]
     fn beats_per_cycle_slows_the_layer() {
         let mut l = Layer::new(Effect::Color);
-        l.beats_per_cycle = 4;
+        l.beats_per_cycle = 4.0;
         assert!(l.phase(4.0).abs() < 1e-6); // one loop after 4 beats
         assert!((l.phase(2.0) - 0.5).abs() < 1e-6); // halfway at 2 beats
     }
