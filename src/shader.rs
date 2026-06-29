@@ -24,6 +24,7 @@ out vec4 fragColor;
 uniform vec2 u_resolution;
 uniform float u_time;
 uniform sampler2D u_feedback; // the previous frame, for MilkDrop-style feedback
+uniform float u_sliders[8];   // 8 generic [0,1] controls from the layer UI
 "#;
 
 /// A starter shader (original) so the runner shows something immediately.
@@ -39,19 +40,105 @@ pub const EXAMPLE: &str = r#"void main() {
 "#;
 
 /// MilkDrop-style feedback (original): zoom+rotate the previous frame, decay it,
-/// and add a moving spark. Paste into a deck's shader to see the tunnel/flow.
+/// and add a moving spark. sliders: [0]=rotate [1]=zoom [2]=decay.
 pub const FEEDBACK_EXAMPLE: &str = r#"void main() {
     vec2 uv = gl_FragCoord.xy / u_resolution;
     vec2 c = uv - 0.5;
-    float a = 0.02;                       // rotate
+    float a = (u_sliders[0] - 0.5) * 0.12;
     mat2 rot = mat2(cos(a), -sin(a), sin(a), cos(a));
-    vec2 prev = rot * c * 0.98 + 0.5;     // zoom in slightly
-    vec3 fb = texture(u_feedback, prev).rgb * 0.96;  // decay
+    vec2 prev = rot * c * (0.95 + u_sliders[1] * 0.06) + 0.5;
+    vec3 fb = texture(u_feedback, prev).rgb * (0.90 + u_sliders[2] * 0.09);
     float d = length(c - 0.3 * vec2(cos(u_time), sin(u_time * 1.3)));
     vec3 spark = smoothstep(0.06, 0.0, d) * (0.5 + 0.5 * cos(u_time + vec3(0.0, 2.0, 4.0)));
     fragColor = vec4(max(fb, spark), 1.0);
 }
 "#;
+
+/// A named shader in the dropdown library. All original; the runner lets users
+/// paste ShaderToy/Book-of-Shaders shaders themselves (those are author-licensed).
+pub struct Shader {
+    pub name: &'static str,
+    pub src: &'static str,
+}
+
+const RINGS: &str = r#"void main() {
+    vec2 p = gl_FragCoord.xy / u_resolution - 0.5;
+    float r = length(p) * (4.0 + u_sliders[0] * 24.0);
+    float v = 0.5 + 0.5 * sin(r - u_time * (1.0 + u_sliders[1] * 5.0));
+    fragColor = vec4(v * (0.4 + 0.6 * cos(u_time * 0.3 + vec3(0.0, 2.0, 4.0))), 1.0);
+}
+"#;
+
+const KALEIDOSCOPE: &str = r#"void main() {
+    vec2 p = gl_FragCoord.xy / u_resolution - 0.5;
+    float seg = 3.0 + floor(u_sliders[0] * 9.0);
+    float ang = atan(p.y, p.x);
+    float rad = length(p);
+    ang = abs(mod(ang, 6.2831 / seg) - 3.1416 / seg);
+    vec2 q = vec2(cos(ang), sin(ang)) * rad;
+    float v = sin(q.x * 24.0 + u_time) + sin(q.y * 24.0 - u_time);
+    fragColor = vec4(0.5 + 0.5 * cos(v + vec3(0.0, 2.0, 4.0)), 1.0);
+}
+"#;
+
+const VORONOI: &str = r#"vec2 h2(vec2 p) {
+    return fract(sin(vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)))) * 43758.5);
+}
+void main() {
+    vec2 uv = gl_FragCoord.xy / u_resolution * (2.0 + u_sliders[0] * 10.0);
+    vec2 g = floor(uv), f = fract(uv);
+    float md = 1.0;
+    for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) {
+        vec2 o = vec2(float(x), float(y));
+        vec2 p = h2(g + o);
+        p = 0.5 + 0.5 * sin(u_time * (0.5 + u_sliders[1]) + 6.2831 * p);
+        md = min(md, length(o + p - f));
+    }
+    fragColor = vec4(vec3(md) * vec3(0.4, 0.7, 1.0), 1.0);
+}
+"#;
+
+const SPIRAL: &str = r#"void main() {
+    vec2 p = gl_FragCoord.xy / u_resolution - 0.5;
+    float a = atan(p.y, p.x), r = length(p);
+    float arms = 2.0 + floor(u_sliders[0] * 8.0);
+    float v = sin(a * arms + r * (10.0 + u_sliders[1] * 40.0) - u_time * 2.0);
+    fragColor = vec4(0.5 + 0.5 * cos(v + vec3(0.0, 2.0, 4.0)), 1.0);
+}
+"#;
+
+const WARP: &str = r#"void main() {
+    vec2 uv = gl_FragCoord.xy / u_resolution;
+    float t = u_time * 0.3;
+    vec2 q = uv + (0.1 + 0.3 * u_sliders[0]) * vec2(sin(uv.y * 6.0 + t), cos(uv.x * 6.0 + t));
+    float v = sin(q.x * 10.0 + t) + sin(q.y * 10.0 - t);
+    fragColor = vec4(0.5 + 0.5 * cos(v + u_sliders[1] * 6.0 + vec3(0.0, 2.0, 4.0)), 1.0);
+}
+"#;
+
+const STARFIELD: &str = r#"float h(vec2 p) { return fract(sin(dot(p, vec2(41.0, 289.0))) * 43758.5); }
+void main() {
+    vec2 uv = gl_FragCoord.xy / u_resolution;
+    vec3 col = vec3(0.0);
+    for (float i = 0.0; i < 3.0; i++) {
+        vec2 sc = uv * (20.0 + i * 12.0) + vec2(0.0, u_time * (1.0 + u_sliders[0] * 5.0) * (i + 1.0));
+        float s = h(floor(sc) + i * 13.0);
+        col += smoothstep(0.985, 1.0, s) * (1.0 - i * 0.3);
+    }
+    fragColor = vec4(col, 1.0);
+}
+"#;
+
+pub const SHADERS: &[Shader] = &[
+    Shader { name: "Plasma", src: EXAMPLE },
+    Shader { name: "Tunnel (feedback)", src: FEEDBACK_EXAMPLE },
+    Shader { name: "Rings", src: RINGS },
+    Shader { name: "Kaleidoscope", src: KALEIDOSCOPE },
+    Shader { name: "Voronoi", src: VORONOI },
+    Shader { name: "Spiral", src: SPIRAL },
+    Shader { name: "Warp", src: WARP },
+    Shader { name: "Starfield", src: STARFIELD },
+];
 
 pub struct GpuShader {
     gl: Arc<glow::Context>,
@@ -117,8 +204,9 @@ impl GpuShader {
         }
     }
 
-    /// Render the shader at time `t`, sampling the previous frame as u_feedback.
-    pub fn render(&mut self, t: f32) {
+    /// Render the shader at time `t` with the 8 control values, sampling the
+    /// previous frame as u_feedback.
+    pub fn render(&mut self, t: f32, sliders: &[f32]) {
         let gl = &self.gl;
         let read = self.tex[1 - self.write];
         let write = self.tex[self.write];
@@ -137,6 +225,8 @@ impl GpuShader {
             gl.uniform_2_f32(res.as_ref(), self.w as f32, self.h as f32);
             let time = gl.get_uniform_location(self.program, "u_time");
             gl.uniform_1_f32(time.as_ref(), t);
+            let sl = gl.get_uniform_location(self.program, "u_sliders");
+            gl.uniform_1_f32_slice(sl.as_ref(), sliders);
             gl.active_texture(glow::TEXTURE0);
             gl.bind_texture(glow::TEXTURE_2D, Some(read));
             let fb = gl.get_uniform_location(self.program, "u_feedback");

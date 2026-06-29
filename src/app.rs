@@ -36,11 +36,19 @@ struct DeckShader {
     dirty: bool,
     compiled: Option<GpuShader>,
     error: Option<String>,
+    sliders: [f32; 8],
 }
 
 impl DeckShader {
     fn new(enabled: bool) -> Self {
-        DeckShader { enabled, src: shader::EXAMPLE.to_string(), dirty: true, compiled: None, error: None }
+        DeckShader {
+            enabled,
+            src: shader::EXAMPLE.to_string(),
+            dirty: true,
+            compiled: None,
+            error: None,
+            sliders: [0.5; 8],
+        }
     }
 }
 
@@ -88,7 +96,7 @@ fn render_deck(
             sh.dirty = false;
         }
         if let Some(s) = sh.compiled.as_mut() {
-            s.render(beats);
+            s.render(beats, &sh.sliders);
             s.copy_into(canvas);
             return;
         }
@@ -504,17 +512,16 @@ impl eframe::App for App {
                         sh.dirty = true;
                     }
                     if sh.enabled {
-                        ui.horizontal(|ui| {
-                            ui.label("load:");
-                            if ui.button("basic").clicked() {
-                                sh.src = shader::EXAMPLE.to_string();
-                                sh.dirty = true;
-                            }
-                            if ui.button("feedback").clicked() {
-                                sh.src = shader::FEEDBACK_EXAMPLE.to_string();
-                                sh.dirty = true;
-                            }
-                        });
+                        egui::ComboBox::from_id_salt("shader_lib")
+                            .selected_text("load shader…")
+                            .show_ui(ui, |ui| {
+                                for s in shader::SHADERS {
+                                    if ui.selectable_label(false, s.name).clicked() {
+                                        sh.src = s.src.to_string();
+                                        sh.dirty = true;
+                                    }
+                                }
+                            });
                         let r = ui.add(
                             egui::TextEdit::multiline(&mut sh.src)
                                 .code_editor()
@@ -526,6 +533,10 @@ impl eframe::App for App {
                         }
                         if let Some(e) = &sh.error {
                             ui.colored_label(egui::Color32::RED, e);
+                        }
+                        ui.label("controls (u_sliders)");
+                        for i in 0..8 {
+                            rslider(ui, &mut sh.sliders[i], 0.0..=1.0, &format!("k{i}"), 0.5);
                         }
                     }
                 });
