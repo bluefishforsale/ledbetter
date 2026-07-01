@@ -3,6 +3,7 @@
 //! egui preview, still feeding Art-Net. See CONTEXT.md and docs/adr/.
 
 mod app;
+mod camera;
 mod canvas;
 mod clock;
 mod crossfader;
